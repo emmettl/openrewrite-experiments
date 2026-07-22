@@ -1,0 +1,13 @@
+#
+# Declarative recipes. Anything on the classpath under META-INF/rewrite/*.yml is discovered
+# automatically, so these are runnable by name without writing any Java.
+#
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: io.github.emmettl.rewrite.Tidy
+displayName: Tidy up
+description: A composite of the experiments in this repo plus a couple of built-ins.
+recipeList:
+  - io.github.emmettl.rewrite.RemoveRedundantStringToString
+  - org.openrewrite.java.RemoveUnusedImports
+  - org.openrewrite.java.format.RemoveTrailingWhitespace
