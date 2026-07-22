@@ -29,8 +29,38 @@ here has negative tests as well as positive ones.
 | --- | --- | --- |
 | `RemoveRedundantStringToString` | Java visitor | Drops `.toString()` on an expression already typed `String`. `MethodMatcher`, a `TypeUtils` check on the receiver, a `Preconditions.check` guard, and prefix preservation. |
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
+| `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
 | `Tidy` | Declarative YAML | Composes a local recipe with two built-ins. |
 | `RemoveDebugPrinting` | Declarative YAML | Supplies an **option value** by name to `RemoveMethodInvocation`. |
+
+### `EventListenerToRequestHandler`
+
+| | before | after |
+| --- | --- | --- |
+| annotation | `@EventListener(MyRequestType.TYPE)` | `@RequestHandler` |
+| return type | `void` | `MyResponseType` |
+| parameters | `(MyRequestType, MessageInfo)` | `(MyRequestType)` |
+| reply | `emit(SEND_REPLY, new MyResponseType(), messageInfo);` | `return new MyResponseType();` |
+| failure | `emit(SEND_ERROR, e);` | `throw new RuntimeException(e);` |
+| other emits | `emit("AnEvent", …)` | unchanged |
+
+The reply emit is what drives it: its payload argument becomes the return value *and* supplies the
+new return type, and its trailing argument names the routing parameter to drop. A listener with no
+reply emit is left completely alone rather than half-migrated into something that will not compile.
+
+Everything is an option (annotation names, emitter method pattern, the two constants), so it is not
+tied to the fixture package.
+
+### Fixtures
+
+`src/test/java/.../fixtures/` holds compiled before/after examples — real classes, so IDEA and the
+compiler type-check both sides of a migration. They are **input, not a test suite**: surefire
+excludes `**/fixtures/**`, since nothing wires up their mocks and running them is meaningless.
+
+The recipe tests use text literals rather than reading those files, and get the fixture types from
+`JavaParser.runtimeClasspath()` — as *compiled classes*, which is the same mechanism by which a real
+project's types arrive from its jars. So the types are not simulated as source; only the handler
+under migration is text.
 
 ```
 src/main/java/io/github/emmettl/rewrite/    recipes

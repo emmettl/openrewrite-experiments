@@ -16,38 +16,38 @@ class RemoveMethodInvocationTest implements RewriteTest {
     @Test
     void removesStandaloneCall() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  int compute() {
-                      System.out.println("debugging");
-                      return 42;
-                  }
-              }
-              """,
-            """
-              class A {
-                  int compute() {
-                      return 42;
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    int compute() {
+                                        System.out.println("debugging");
+                                        return 42;
+                                    }
+                                }
+                                """,
+                        """
+                                class A {
+                                    int compute() {
+                                        return 42;
+                                    }
+                                }
+                                """
+                )
         );
     }
 
     @Test
     void leavesUnmatchedMethodsAlone() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  void run() {
-                      System.out.print("kept");
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    void run() {
+                                        System.out.print("kept");
+                                    }
+                                }
+                                """
+                )
         );
     }
 
@@ -58,16 +58,16 @@ class RemoveMethodInvocationTest implements RewriteTest {
     @Test
     void leavesCallsWhoseValueIsUsedAlone() {
         rewriteRun(
-          spec -> spec.recipe(new RemoveMethodInvocation("java.lang.String trim()")),
-          java(
-            """
-              class A {
-                  String clean(String s) {
-                      return s.trim();
-                  }
-              }
-              """
-          )
+                spec -> spec.recipe(new RemoveMethodInvocation("java.lang.String trim()")),
+                java(
+                        """
+                                class A {
+                                    String clean(String s) {
+                                        return s.trim();
+                                    }
+                                }
+                                """
+                )
         );
     }
 }

@@ -24,48 +24,48 @@ class TidyTest implements RewriteTest {
     @Test
     void bindsOptionsDeclaredInYaml() {
         rewriteRun(
-          spec -> spec.recipeFromResources("io.github.emmettl.rewrite.RemoveDebugPrinting"),
-          java(
-            """
-              class A {
-                  int compute() {
-                      System.out.println("debugging");
-                      return 42;
-                  }
-              }
-              """,
-            """
-              class A {
-                  int compute() {
-                      return 42;
-                  }
-              }
-              """
-          )
+                spec -> spec.recipeFromResources("io.github.emmettl.rewrite.RemoveDebugPrinting"),
+                java(
+                        """
+                                class A {
+                                    int compute() {
+                                        System.out.println("debugging");
+                                        return 42;
+                                    }
+                                }
+                                """,
+                        """
+                                class A {
+                                    int compute() {
+                                        return 42;
+                                    }
+                                }
+                                """
+                )
         );
     }
 
     @Test
     void appliesTheComposedRecipes() {
         rewriteRun(
-          java(
-            """
-              import java.util.List;
-
-              class A {
-                  String greet(String name) {
-                      return name.toString();
-                  }
-              }
-              """,
-            """
-              class A {
-                  String greet(String name) {
-                      return name;
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                import java.util.List;
+                                
+                                class A {
+                                    String greet(String name) {
+                                        return name.toString();
+                                    }
+                                }
+                                """,
+                        """
+                                class A {
+                                    String greet(String name) {
+                                        return name;
+                                    }
+                                }
+                                """
+                )
         );
     }
 }

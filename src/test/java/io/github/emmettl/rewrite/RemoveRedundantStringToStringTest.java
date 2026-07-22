@@ -16,75 +16,75 @@ class RemoveRedundantStringToStringTest implements RewriteTest {
     @Test
     void removesCallOnStringVariable() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  String greet(String name) {
-                      return name.toString();
-                  }
-              }
-              """,
-            """
-              class A {
-                  String greet(String name) {
-                      return name;
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    String greet(String name) {
+                                        return name.toString();
+                                    }
+                                }
+                                """,
+                        """
+                                class A {
+                                    String greet(String name) {
+                                        return name;
+                                    }
+                                }
+                                """
+                )
         );
     }
 
     @Test
     void removesCallOnStringLiteral() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  String shout() {
-                      return "hi".toString().toUpperCase();
-                  }
-              }
-              """,
-            """
-              class A {
-                  String shout() {
-                      return "hi".toUpperCase();
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    String shout() {
+                                        return "hi".toString().toUpperCase();
+                                    }
+                                }
+                                """,
+                        """
+                                class A {
+                                    String shout() {
+                                        return "hi".toUpperCase();
+                                    }
+                                }
+                                """
+                )
         );
     }
 
     @Test
     void leavesToStringOnOtherTypesAlone() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  String describe(Object o, int i) {
-                      return o.toString() + Integer.valueOf(i).toString();
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    String describe(Object o, int i) {
+                                        return o.toString() + Integer.valueOf(i).toString();
+                                    }
+                                }
+                                """
+                )
         );
     }
 
     @Test
     void leavesAnOverriddenToStringDeclarationAlone() {
         rewriteRun(
-          java(
-            """
-              class A {
-                  @Override
-                  public String toString() {
-                      return "A";
-                  }
-              }
-              """
-          )
+                java(
+                        """
+                                class A {
+                                    @Override
+                                    public String toString() {
+                                        return "A";
+                                    }
+                                }
+                                """
+                )
         );
     }
 }

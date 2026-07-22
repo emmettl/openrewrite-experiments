@@ -58,6 +58,14 @@
       <artifactId>rewrite-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- Source: https://mvnrepository.com/artifact/org.mockito/mockito-core -->
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.23.0</version>
+      <scope>test</scope>
+    </dependency>
     <!--
       The parser that turns test source into an LST. It drives the JDK's own javac internals, so it
       must match the JDK the tests run on — hence rewrite-java-25 and a CI pinned to 25. Add
@@ -101,6 +109,15 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
         <configuration>
+          <!--
+            The fixtures package is recipe *input*, not a suite to execute. Those classes are
+            compiled so that both sides of a migration are known to be valid Java, and so their
+            types are available to the parser — but running them is meaningless, since nothing
+            wires up their mocks.
+          -->
+          <excludes>
+            <exclude>**/fixtures/**</exclude>
+          </excludes>
           <!--
             The Java parser drives javac internals directly, so the test JVM has to open them.
             Without these you get IllegalAccessError from com.sun.tools.javac.* at parse time.
