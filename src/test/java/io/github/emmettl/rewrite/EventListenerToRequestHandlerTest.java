@@ -117,6 +117,70 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
     }
 
     /**
+     * Listeners of other shapes — different arguments, no request/reply round trip — are a
+     * different pattern and must be left exactly as they are, even when they sit in the same class
+     * as one that does migrate.
+     */
+    @Test
+    void leavesOtherListenerShapesAloneAlongsideAMigratedOne() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MixedHandlers {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener("NEW_TRADE")
+                  public void handleNewTrade(String tradeId, String account) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  }
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MixedHandlers {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener("NEW_TRADE")
+                  public void handleNewTrade(String tradeId, String account) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  }
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      return new MyResponseType();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * Emitting is not by itself a reason to rewrite — only methods carrying the listener annotation
      * are migrated.
      */

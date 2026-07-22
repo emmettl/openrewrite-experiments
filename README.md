@@ -30,6 +30,7 @@ here has negative tests as well as positive ones.
 | `RemoveRedundantStringToString` | Java visitor | Drops `.toString()` on an expression already typed `String`. `MethodMatcher`, a `TypeUtils` check on the receiver, a `Preconditions.check` guard, and prefix preservation. |
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
 | `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
+| `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
 | `Tidy` | Declarative YAML | Composes a local recipe with two built-ins. |
 | `RemoveDebugPrinting` | Declarative YAML | Supplies an **option value** by name to `RemoveMethodInvocation`. |
 
@@ -45,11 +46,45 @@ here has negative tests as well as positive ones.
 | other emits | `emit("AnEvent", …)` | unchanged |
 
 The reply emit is what drives it: its payload argument becomes the return value *and* supplies the
-new return type, and its trailing argument names the routing parameter to drop. A listener with no
-reply emit is left completely alone rather than half-migrated into something that will not compile.
+new return type, and its trailing argument names the routing parameter to drop.
+
+**Only this shape migrates.** A listener with no reply emit — `@EventListener("NEW_TRADE") void
+handleNewTrade(String tradeId, String account)` and friends — is left completely alone rather than
+half-migrated into something that will not compile, including when it sits in the same class as one
+that does migrate. That case is pinned by a test.
 
 Everything is an option (annotation names, emitter method pattern, the two constants), so it is not
 tied to the fixture package.
+
+### `HandlerTestToDirectCall`
+
+The caller-side companion, for tests that asserted on the captured reply:
+
+```java
+// before
+handler.handleRequest(new MyRequestType(), new MessageInfo("foo"));
+verify(eventEmitter).emit(eq(SEND_REPLY), responseCaptor.capture(), any(MessageInfo.class));
+var response = responseCaptor.getValue();
+assertThat(response).isNotNull();
+
+// after
+var response = handler.handleRequest(new MyRequestType());
+assertThat(response).isNotNull();
+```
+
+The `verify` is the anchor: it names the captor, and its `any(X.class)` matcher identifies the
+routing argument to drop from the call. The captor's `getValue()` assignment supplies the name to
+bind the result to, so the assertions below it keep compiling untouched. Only the captor whose round
+trip actually collapsed is removed — other captor fields are still in use and survive.
+
+One subtlety worth knowing if you write something similar: the recipe also rewrites the *method
+type* on the migrated call. Type attribution is fixed when sources are parsed and is not re-derived
+between recipes, so the LST still describes the handler as it was before — two parameters, returning
+void. The written source is correct either way, since javac re-resolves it, but without that fixup
+the LST contradicts itself and `RewriteTest`'s type validation fails.
+
+Redundant imports left behind (a response type that was only ever named as the captor's type
+argument) are not chased — `RemoveUnusedImports`, or Ctrl-Alt-L, is the cheaper fix.
 
 ### Fixtures
 
