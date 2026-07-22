@@ -11,5 +11,8 @@ target/
 .classpath
 .project
 
+# Local tooling
+.claude/
+
 # OS
 .DS_Store

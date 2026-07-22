@@ -11,3 +11,15 @@ recipeList:
   - io.github.emmettl.rewrite.RemoveRedundantStringToString
   - org.openrewrite.java.RemoveUnusedImports
   - org.openrewrite.java.format.RemoveTrailingWhitespace
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: io.github.emmettl.rewrite.RemoveDebugPrinting
+displayName: Remove debug printing
+# `>-` not `>`: the folded scalar keeps a trailing newline, and the harness checks that a
+# description ends with a period.
+description: >-
+  Deletes standalone `System.out.println` calls. Supplies an option by name to a Java recipe,
+  which only binds because the build compiles with `-parameters`.
+recipeList:
+  - io.github.emmettl.rewrite.RemoveMethodInvocation:
+      methodPattern: java.io.PrintStream println(..)

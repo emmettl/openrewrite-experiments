@@ -15,8 +15,12 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <rewrite.version>8.56.1</rewrite.version>
-    <rewrite-recipe-bom.version>3.10.1</rewrite-recipe-bom.version>
+    <!--
+      The only OpenRewrite version in this file. rewrite-recipe-bom is a superset of rewrite-bom:
+      it manages rewrite-core/java/test AND the published recipe modules (rewrite-static-analysis,
+      rewrite-migrate-java, ...), so recipes here can compose with those without adding versions.
+    -->
+    <rewrite-recipe-bom.version>3.35.0</rewrite-recipe-bom.version>
     <!-- Must match the Jupiter API rewrite-test compiles against, or the engine and API disagree. -->
     <junit.version>5.13.2</junit.version>
     <assertj.version>3.27.3</assertj.version>
@@ -54,10 +58,14 @@
       <artifactId>rewrite-test</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- The parser that actually turns test source into an LST. Must match the JDK tests run on. -->
+    <!--
+      The parser that turns test source into an LST. It drives the JDK's own javac internals, so it
+      must match the JDK the tests run on — hence rewrite-java-25 and a CI pinned to 25. Add
+      rewrite-java-17/-21 alongside it if you want tests that parse at those language levels.
+    -->
     <dependency>
       <groupId>org.openrewrite</groupId>
-      <artifactId>rewrite-java-21</artifactId>
+      <artifactId>rewrite-java-25</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -75,6 +83,19 @@
 
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <!--
+            Required by OpenRewrite. Recipe options are deserialized by Jackson using the *names* of
+            the constructor parameters, which only survive into the bytecode with this flag. Without
+            it, a recipe that takes options fails when it is loaded, not when it is compiled.
+          -->
+          <parameters>true</parameters>
+        </configuration>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>

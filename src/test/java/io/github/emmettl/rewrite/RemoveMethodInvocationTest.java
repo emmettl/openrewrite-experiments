@@ -6,25 +6,16 @@ import org.openrewrite.test.RewriteTest;
 
 import static org.openrewrite.java.Assertions.java;
 
-/**
- * Loading the recipe by name is the point here: it proves the YAML parses, that the recipe is
- * discoverable on the classpath, and that every entry in its recipeList actually resolves.
- */
-class TidyTest implements RewriteTest {
+class RemoveMethodInvocationTest implements RewriteTest {
 
     @Override
     public void defaults(RecipeSpec spec) {
-        spec.recipeFromResources("io.github.emmettl.rewrite.Tidy");
+        spec.recipe(new RemoveMethodInvocation("java.io.PrintStream println(..)"));
     }
 
-    /**
-     * Binds an option by name from YAML onto a Java recipe's constructor parameter. This is the
-     * test that fails if the build ever stops passing {@code -parameters} to javac.
-     */
     @Test
-    void bindsOptionsDeclaredInYaml() {
+    void removesStandaloneCall() {
         rewriteRun(
-          spec -> spec.recipeFromResources("io.github.emmettl.rewrite.RemoveDebugPrinting"),
           java(
             """
               class A {
@@ -46,22 +37,33 @@ class TidyTest implements RewriteTest {
     }
 
     @Test
-    void appliesTheComposedRecipes() {
+    void leavesUnmatchedMethodsAlone() {
         rewriteRun(
           java(
             """
-              import java.util.List;
-
               class A {
-                  String greet(String name) {
-                      return name.toString();
+                  void run() {
+                      System.out.print("kept");
                   }
               }
-              """,
+              """
+          )
+        );
+    }
+
+    /**
+     * The important negative case: this call's value is used, so deleting it would leave source
+     * that does not compile.
+     */
+    @Test
+    void leavesCallsWhoseValueIsUsedAlone() {
+        rewriteRun(
+          spec -> spec.recipe(new RemoveMethodInvocation("java.lang.String trim()")),
+          java(
             """
               class A {
-                  String greet(String name) {
-                      return name;
+                  String clean(String s) {
+                      return s.trim();
                   }
               }
               """
