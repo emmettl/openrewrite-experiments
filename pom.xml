@@ -23,7 +23,7 @@
     <rewrite-recipe-bom.version>3.35.0</rewrite-recipe-bom.version>
     <!-- Must match the Jupiter API rewrite-test compiles against, or the engine and API disagree. -->
     <junit.version>5.13.2</junit.version>
-    <assertj.version>3.27.3</assertj.version>
+    <assertj.version>3.27.7</assertj.version>
   </properties>
 
   <dependencyManagement>
