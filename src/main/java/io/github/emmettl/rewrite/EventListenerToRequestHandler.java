@@ -262,16 +262,56 @@ public class EventListenerToRequestHandler extends Recipe {
             this.emit = emit;
         }
 
+        /**
+         * The reply emit is handled here, not in {@link #visitMethodInvocation}, because turning it
+         * into a return depends on where it sits: a reply followed by more work — another event
+         * emit, say — cannot become a return in place, or that trailing work would be skipped. The
+         * return is hoisted to the end of the block instead. When the reply is already last, this
+         * lands in the same spot, so the two cases share one path.
+         */
+        @Override
+        public J visitBlock(J.Block block, ExecutionContext ctx) {
+            J.Block b = (J.Block) super.visitBlock(block, ctx);
+
+            List<Statement> statements = b.getStatements();
+            int replyIndex = -1;
+            for (int i = 0; i < statements.size(); i++) {
+                if (statements.get(i) instanceof J.MethodInvocation invocation
+                    && emit.matches(invocation)
+                    && invocation.getArguments().size() >= 2
+                    && matchesConstant(invocation.getArguments().get(0), replyConstant)) {
+                    replyIndex = i;
+                    break;
+                }
+            }
+            if (replyIndex < 0) {
+                return b;
+            }
+
+            J.MethodInvocation reply = (J.MethodInvocation) statements.get(replyIndex);
+            // The payload is already fully type-attributed (it came from the parsed source), so
+            // returning it directly keeps the result typed without any template or fixup.
+            Expression payload = reply.getArguments().get(1);
+            J.Return returned = new J.Return(Tree.randomId(), reply.getPrefix(), Markers.EMPTY,
+                    payload.withPrefix(singleSpace()));
+
+            List<Statement> rewritten = new ArrayList<>();
+            for (int i = 0; i < statements.size(); i++) {
+                if (i != replyIndex) {
+                    rewritten.add(statements.get(i));
+                }
+            }
+            // The return takes the reply's prefix, so it lands at the reply's own indentation
+            // whether it stays in place or moves past trailing statements.
+            rewritten.add(returned);
+            return b.withStatements(rewritten);
+        }
+
         @Override
         public J visitMethodInvocation(J.MethodInvocation method, ExecutionContext ctx) {
             J.MethodInvocation m = (J.MethodInvocation) super.visitMethodInvocation(method, ctx);
             if (!emit.matches(m) || m.getArguments().size() < 2) {
                 return m;
-            }
-
-            if (matchesConstant(m.getArguments().get(0), replyConstant)) {
-                return new J.Return(Tree.randomId(), m.getPrefix(), m.getMarkers(),
-                        m.getArguments().get(1).withPrefix(singleSpace()));
             }
 
             if (matchesConstant(m.getArguments().get(0), errorConstant)) {

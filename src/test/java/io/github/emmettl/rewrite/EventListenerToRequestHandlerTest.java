@@ -87,6 +87,69 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
     }
 
     /**
+     * When the method keeps working after the reply — emitting another event here — the reply
+     * cannot become a return in place, or the trailing work would be skipped. The return is hoisted
+     * to the end of the block, after the work that followed the reply.
+     */
+    @Test
+    void hoistsTheReturnWhenWorkFollowsTheReply() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      try {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                          eventEmitter.emit("AnEvent", new SomeEventOrOther("someEvent", "someOther"));
+                      } catch (Exception e) {
+                          eventEmitter.emit(MessageConstants.SEND_ERROR, e);
+                      }
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      try {
+                          eventEmitter.emit("AnEvent", new SomeEventOrOther("someEvent", "someOther"));
+                          return new MyResponseType();
+                      } catch (Exception e) {
+                          throw new RuntimeException(e);
+                      }
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * A listener that never emits a reply has no return value to recover, so migrating it would
      * produce something that does not compile. It is left alone.
      */

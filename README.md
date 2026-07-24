@@ -48,6 +48,13 @@ here has negative tests as well as positive ones.
 The reply emit is what drives it: its payload argument becomes the return value *and* supplies the
 new return type, and its trailing argument names the routing parameter to drop.
 
+**The return is hoisted to the end of the block.** When the method keeps working after the reply —
+emitting another event, say — turning the reply into a `return` in place would skip that trailing
+work, so the reply statement is removed and `return <payload>;` is appended after the work that
+followed it. When the reply is already the last statement, that lands in the same place, so both
+cases share one path. The payload is returned directly (it is already type-attributed from the
+parsed source), not captured into a local; that keeps the output typed with no template or fixup.
+
 **Only this shape migrates.** A listener with no reply emit — `@EventListener("NEW_TRADE") void
 handleNewTrade(String tradeId, String account)` and friends — is left completely alone rather than
 half-migrated into something that will not compile, including when it sits in the same class as one
