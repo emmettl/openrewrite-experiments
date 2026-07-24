@@ -13,7 +13,6 @@ import org.openrewrite.java.search.UsesMethod;
 import org.openrewrite.java.tree.Expression;
 import org.openrewrite.java.tree.J;
 import org.openrewrite.java.tree.JavaType;
-import org.openrewrite.java.tree.Space;
 import org.openrewrite.java.tree.Statement;
 import org.openrewrite.java.tree.TypeUtils;
 
@@ -44,16 +43,17 @@ import java.util.UUID;
  * assertThat(response).isNotNull();
  * </pre>
  *
- * <p>The {@code verify} is the anchor. It names the captor, and its {@code any(X.class)} matcher
- * identifies the routing argument to drop from the call. The captor's {@code getValue()} assignment
- * supplies the name to bind the returned value to, so the assertions below it keep compiling
- * untouched.
+ * <p>The {@code verify} is the anchor. It names the captor, and its routing matcher — whether
+ * {@code any(MessageInfo.class)} (by type) or {@code eq(messageInfo)} (by name) — identifies the
+ * argument to drop from the handler call. The handler call is then found as the invocation that
+ * actually passes that argument, so it is located even when {@code assertThat(…)} and other
+ * statements sit between it and the verify. The captor's {@code getValue()} assignment supplies the
+ * name to bind the returned value to, so the assertions below it keep compiling untouched.
  */
 public class HandlerTestToDirectCall extends Recipe {
 
     private static final MethodMatcher VERIFY = new MethodMatcher("org.mockito.Mockito verify(..)");
     private static final MethodMatcher EQ = new MethodMatcher("org.mockito.ArgumentMatchers eq(..)");
-    private static final MethodMatcher ANY = new MethodMatcher("org.mockito.ArgumentMatchers any(..)");
     private static final MethodMatcher CAPTURE = new MethodMatcher("org.mockito.ArgumentCaptor capture()");
     private static final MethodMatcher GET_VALUE = new MethodMatcher("org.mockito.ArgumentCaptor getValue()");
 
@@ -140,7 +140,7 @@ public class HandlerTestToDirectCall extends Recipe {
                 UUID handlerCallId = migration.handlerCall.getId();
                 String responseName = migration.captured.getVariables().get(0).getSimpleName();
                 JavaType responseType = migration.captured.getVariables().get(0).getType();
-                JavaType routingType = migration.verification.routingType;
+                ReplyVerification verification = migration.verification;
 
                 // A plain JavaVisitor, not an Iso one: the call statement is replaced by a variable
                 // declaration, so the node type changes.
@@ -150,7 +150,7 @@ public class HandlerTestToDirectCall extends Recipe {
                         if (!invocation.getId().equals(handlerCallId)) {
                             return super.visitMethodInvocation(invocation, c);
                         }
-                        J.MethodInvocation direct = retypedCall(invocation, routingType, responseType);
+                        J.MethodInvocation direct = retypedCall(invocation, verification, responseType);
                         J replacement = JavaTemplate
                                 .builder("var " + responseName + " = #{any()};")
                                 .contextSensitive()
@@ -166,9 +166,13 @@ public class HandlerTestToDirectCall extends Recipe {
                 maybeRemoveImport("org.mockito.ArgumentMatchers.eq");
                 maybeRemoveImport("org.mockito.ArgumentMatchers.any");
                 maybeRemoveImport(owningTypeOf(replyConstant));
-                JavaType.FullyQualified routing = TypeUtils.asFullyQualified(routingType);
-                if (routing != null) {
-                    maybeRemoveImport(routing.getFullyQualifiedName());
+                // Any routing type named only in the removed matcher/argument may now be unused;
+                // maybeRemoveImport is a no-op when it is still referenced (e.g. a shared field).
+                for (JavaType routingType : verification.routingTypes) {
+                    JavaType.FullyQualified fq = TypeUtils.asFullyQualified(routingType);
+                    if (fq != null) {
+                        maybeRemoveImport(fq.getFullyQualifiedName());
+                    }
                 }
 
                 return md;
@@ -225,7 +229,7 @@ public class HandlerTestToDirectCall extends Recipe {
             return null;
         }
         J.VariableDeclarations captured = findCapturedValue(statements, verification.captorName);
-        J.MethodInvocation handlerCall = findHandlerCallBefore(statements, verification.statement);
+        J.MethodInvocation handlerCall = findHandlerCall(statements, verification);
         if (captured == null || handlerCall == null) {
             return null;
         }
@@ -235,36 +239,55 @@ public class HandlerTestToDirectCall extends Recipe {
     /**
      * Drops the routing argument and brings the invocation's method type along with it.
      *
-     * <p>The LST still describes the handler as it was before {@link EventListenerToRequestHandler}
-     * touched it — two parameters, returning void — because type attribution is fixed when the
-     * sources are parsed, not re-derived between recipes. Left alone, the rewritten call would
-     * carry a signature that contradicts it. The written source is correct either way, since javac
-     * re-resolves it, but a self-consistent LST is what lets any later recipe reason about the call.
+     * <p>The routing argument is found by the same name/type signal the verify supplied, then the
+     * matching parameter is dropped from the method type by position. Keeping the method type in step
+     * matters: the LST still describes the handler as it was before {@link EventListenerToRequestHandler}
+     * touched it — routing parameter present, returning void — because type attribution is fixed when
+     * the sources are parsed, not re-derived between recipes. The written source is correct either
+     * way, since javac re-resolves it, but a self-consistent LST is what lets any later recipe reason
+     * about the call, and what keeps the argument/parameter counts from contradicting each other.
      */
-    private static J.MethodInvocation retypedCall(J.MethodInvocation invocation, JavaType routingType,
+    private static J.MethodInvocation retypedCall(J.MethodInvocation invocation, ReplyVerification verification,
                                                   JavaType responseType) {
-        J.MethodInvocation direct = invocation.withArguments(
-                withoutRoutingArgument(invocation.getArguments(), routingType));
-
-        JavaType.Method methodType = invocation.getMethodType();
-        if (methodType == null || routingType == null) {
-            return direct;
-        }
-
-        List<String> keptNames = new ArrayList<>();
-        List<JavaType> keptTypes = new ArrayList<>();
-        List<String> names = methodType.getParameterNames();
-        List<JavaType> types = methodType.getParameterTypes();
-        for (int i = 0; i < types.size(); i++) {
-            if (!TypeUtils.isAssignableTo(routingType, types.get(i))) {
-                keptTypes.add(types.get(i));
-                keptNames.add(i < names.size() ? names.get(i) : "arg" + i);
+        List<Expression> arguments = invocation.getArguments();
+        List<Integer> dropped = new ArrayList<>();
+        for (int i = 0; i < arguments.size(); i++) {
+            if (isRoutingArgument(arguments.get(i), verification)) {
+                dropped.add(i);
             }
         }
+        if (dropped.isEmpty() || dropped.size() == arguments.size()) {
+            // Nothing to drop, or everything would go — leave the arguments untouched.
+            return invocation;
+        }
 
-        JavaType.Method migrated = methodType
-                .withParameterNames(keptNames)
-                .withParameterTypes(keptTypes);
+        List<Expression> keptArguments = new ArrayList<>();
+        for (int i = 0; i < arguments.size(); i++) {
+            if (!dropped.contains(i)) {
+                keptArguments.add(arguments.get(i));
+            }
+        }
+        // Whatever ends up first sits right after `(`, so it takes the original first argument's
+        // prefix (whether that argument survived or a later one slid into its place).
+        keptArguments.set(0, keptArguments.get(0).withPrefix(arguments.get(0).getPrefix()));
+        J.MethodInvocation direct = invocation.withArguments(keptArguments);
+
+        JavaType.Method methodType = invocation.getMethodType();
+        if (methodType == null) {
+            return direct;
+        }
+        List<String> names = new ArrayList<>(methodType.getParameterNames());
+        List<JavaType> types = new ArrayList<>(methodType.getParameterTypes());
+        for (int i = dropped.size() - 1; i >= 0; i--) {
+            int index = dropped.get(i);
+            if (index < names.size()) {
+                names.remove(index);
+            }
+            if (index < types.size()) {
+                types.remove(index);
+            }
+        }
+        JavaType.Method migrated = methodType.withParameterNames(names).withParameterTypes(types);
         if (responseType != null) {
             migrated = migrated.withReturnType(responseType);
         }
@@ -282,25 +305,11 @@ public class HandlerTestToDirectCall extends Recipe {
         return vd;
     }
 
-    private static List<Expression> withoutRoutingArgument(List<Expression> arguments, JavaType routingType) {
-        if (routingType == null) {
-            return arguments;
-        }
-        List<Expression> kept = new ArrayList<>();
-        for (Expression argument : arguments) {
-            if (!TypeUtils.isAssignableTo(routingType, argument.getType())) {
-                kept.add(argument);
-            }
-        }
-        if (kept.isEmpty() || kept.size() == arguments.size()) {
-            return arguments;
-        }
-        kept.set(0, kept.get(0).withPrefix(Space.EMPTY));
-        return kept;
-    }
-
     /**
-     * A {@code verify(mock).emit(eq(REPLY), captor.capture(), any(Routing.class))} statement.
+     * A {@code verify(mock).emit(eq(REPLY), captor.capture(), <routing matcher>)} statement. The
+     * routing matcher can be {@code any(MessageInfo.class)} (a type) or {@code eq(messageInfo)} (a
+     * value) — any matcher that is neither the reply {@code eq} nor the captor stands in for a
+     * routing argument the migrated call no longer needs.
      */
     private ReplyVerification findReplyVerification(List<Statement> statements, MethodMatcher emit) {
         for (Statement statement : statements) {
@@ -312,7 +321,8 @@ public class HandlerTestToDirectCall extends Recipe {
             }
 
             String captorName = null;
-            JavaType routingType = null;
+            List<String> routingNames = new ArrayList<>();
+            List<JavaType> routingTypes = new ArrayList<>();
             boolean repliesToConstant = false;
             for (Expression argument : invocation.getArguments()) {
                 if (!(argument instanceof J.MethodInvocation matcher)) {
@@ -323,16 +333,34 @@ public class HandlerTestToDirectCall extends Recipe {
                     repliesToConstant = true;
                 } else if (CAPTURE.matches(matcher) && matcher.getSelect() instanceof J.Identifier captor) {
                     captorName = captor.getSimpleName();
-                } else if (ANY.matches(matcher) && !matcher.getArguments().isEmpty()) {
-                    routingType = classLiteralType(matcher.getArguments().get(0));
+                } else {
+                    recordRouting(matcher, routingNames, routingTypes);
                 }
             }
 
             if (repliesToConstant && captorName != null) {
-                return new ReplyVerification(invocation, captorName, routingType);
+                return new ReplyVerification(invocation, captorName, routingNames, routingTypes);
             }
         }
         return null;
+    }
+
+    /** Extracts whatever identifies the routing argument from a matcher — a name, a type, or both. */
+    private static void recordRouting(J.MethodInvocation matcher, List<String> names, List<JavaType> types) {
+        Expression inner = matcher.getArguments().isEmpty() ? null : matcher.getArguments().get(0);
+        JavaType classLiteral = classLiteralType(inner);          // any(X.class) / isA(X.class)
+        if (classLiteral != null) {
+            types.add(classLiteral);
+            return;
+        }
+        if (inner instanceof J.Identifier id) {                   // eq(messageInfo) / same(messageInfo)
+            names.add(id.getSimpleName());
+            if (id.getType() != null) {
+                types.add(id.getType());
+            }
+        } else if (inner != null && inner.getType() != null) {    // eq(someExpression)
+            types.add(inner.getType());
+        }
     }
 
     /** The {@code var response = captor.getValue();} that names the value under assertion. */
@@ -352,18 +380,62 @@ public class HandlerTestToDirectCall extends Recipe {
         return null;
     }
 
-    /** The last bare invocation statement before the verification — the call under test. */
-    private static J.MethodInvocation findHandlerCallBefore(List<Statement> statements, Statement verification) {
-        J.MethodInvocation candidate = null;
+    /**
+     * The handler call under test, among the statements before the verification. When a routing
+     * argument is known, it is the invocation that passes it — robust to {@code assertThat(…)} and
+     * other invocation statements sitting between the call and the verify. Otherwise it falls back to
+     * the last invocation statement before the verify.
+     */
+    private static J.MethodInvocation findHandlerCall(List<Statement> statements, ReplyVerification verification) {
+        J.MethodInvocation lastInvocation = null;
+        J.MethodInvocation routingInvocation = null;
         for (Statement statement : statements) {
-            if (statement == verification) {
-                return candidate;
+            if (statement == verification.statement) {
+                break;
             }
             if (statement instanceof J.MethodInvocation invocation) {
-                candidate = invocation;
+                lastInvocation = invocation;
+                if (verification.hasRouting() && passesRoutingArgument(invocation, verification)) {
+                    routingInvocation = invocation;
+                }
             }
         }
-        return null;
+        return verification.hasRouting() ? routingInvocation : lastInvocation;
+    }
+
+    private static boolean passesRoutingArgument(J.MethodInvocation invocation, ReplyVerification verification) {
+        for (Expression argument : invocation.getArguments()) {
+            if (isRoutingArgument(argument, verification)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A call argument is the routing one if it matches a routing name or a routing type. */
+    private static boolean isRoutingArgument(Expression argument, ReplyVerification verification) {
+        if (argument instanceof J.Identifier id && verification.routingNames.contains(id.getSimpleName())) {
+            return true;
+        }
+        JavaType argumentType = argument.getType();
+        if (argumentType != null) {
+            for (JavaType routingType : verification.routingTypes) {
+                if (typesMatch(routingType, argumentType)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Same declared type, or assignable in either direction — tolerant of interface/concrete drift. */
+    private static boolean typesMatch(JavaType a, JavaType b) {
+        JavaType.FullyQualified fa = TypeUtils.asFullyQualified(a);
+        JavaType.FullyQualified fb = TypeUtils.asFullyQualified(b);
+        if (fa != null && fb != null && fa.getFullyQualifiedName().equals(fb.getFullyQualifiedName())) {
+            return true;
+        }
+        return TypeUtils.isAssignableTo(a, b) || TypeUtils.isAssignableTo(b, a);
     }
 
     private static JavaType classLiteralType(Expression expression) {
@@ -409,12 +481,21 @@ public class HandlerTestToDirectCall extends Recipe {
     private static class ReplyVerification {
         private final J.MethodInvocation statement;
         private final String captorName;
-        private final JavaType routingType;
+        // A routing matcher can identify its argument by name (`eq(messageInfo)`) or by type
+        // (`any(MessageInfo.class)`), so both are collected and either can match the call argument.
+        private final List<String> routingNames;
+        private final List<JavaType> routingTypes;
 
-        private ReplyVerification(J.MethodInvocation statement, String captorName, JavaType routingType) {
+        private ReplyVerification(J.MethodInvocation statement, String captorName,
+                                  List<String> routingNames, List<JavaType> routingTypes) {
             this.statement = statement;
             this.captorName = captorName;
-            this.routingType = routingType;
+            this.routingNames = routingNames;
+            this.routingTypes = routingTypes;
+        }
+
+        private boolean hasRouting() {
+            return !routingNames.isEmpty() || !routingTypes.isEmpty();
         }
     }
 }

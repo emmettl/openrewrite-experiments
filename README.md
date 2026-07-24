@@ -89,10 +89,14 @@ var response = handler.handleRequest(new MyRequestType());
 assertThat(response).isNotNull();
 ```
 
-The `verify` is the anchor: it names the captor, and its `any(X.class)` matcher identifies the
-routing argument to drop from the call. The captor's `getValue()` assignment supplies the name to
-bind the result to, so the assertions below it keep compiling untouched. Only the captor whose round
-trip actually collapsed is removed — other captor fields are still in use and survive.
+The `verify` is the anchor: it names the captor, and its routing matcher identifies the argument to
+drop from the call — by **type** (`any(MessageInfo.class)`) or by **name** (`eq(messageInfo)`),
+since real tests use either. The handler call is then found as the invocation that actually **passes
+that argument**, so it is located even when `assertThat(…)` and other statements sit between the call
+and the verify (a stack of assertions on an intermediate `var`, a second event `verify`). The
+captor's `getValue()` assignment supplies the name to bind the result to, so the assertions below it
+keep compiling untouched. Only the captor whose round trip actually collapsed is removed — other
+captor fields are still in use and survive.
 
 One subtlety worth knowing if you write something similar: the recipe also rewrites the *method
 type* on the migrated call. Type attribution is fixed when sources are parsed and is not re-derived

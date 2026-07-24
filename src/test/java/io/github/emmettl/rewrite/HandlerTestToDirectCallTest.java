@@ -95,6 +95,96 @@ class HandlerTestToDirectCallTest implements RewriteTest {
     }
 
     /**
+     * The real-world shape: the routing argument is matched with {@code eq(messageInfo)} rather than
+     * {@code any(MessageInfo.class)}, the captured value has an explicit type, and unrelated
+     * statements (and a second, event verify) sit between the handler call and the reply verify. The
+     * routing argument must still be dropped and the handler call found across the gap.
+     */
+    @Test
+    void dropsRoutingArgMatchedByEqAcrossInterveningStatements() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.ArgumentCaptor;
+              import org.mockito.Captor;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.any;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+                  @Captor
+                  private ArgumentCaptor<MyResponseType> responseCaptor;
+
+                  private final MessageInfo messageInfo = new MessageInfo("corr");
+
+                  @Test
+                  public void handleRequestTest() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      myRequestHandler.handleRequest(new MyRequestType(), messageInfo);
+
+                      assertThat(myRequestHandler).isNotNull();
+
+                      verify(eventEmitter).emit(eq(MessageConstants.SEND_REPLY), responseCaptor.capture(), eq(messageInfo));
+                      MyResponseType reply = responseCaptor.getValue();
+                      assertThat(reply).isNotNull();
+                      verify(eventEmitter).emit(eq("AnEvent"), any());
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.any;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+
+                  private final MessageInfo messageInfo = new MessageInfo("corr");
+
+                  @Test
+                  public void handleRequestTest() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      var reply = myRequestHandler.handleRequest(new MyRequestType());
+
+                      assertThat(myRequestHandler).isNotNull();
+                      assertThat(reply).isNotNull();
+                      verify(eventEmitter).emit(eq("AnEvent"), any());
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * A test class may hold captors for other emits. Only the one whose reply round trip is
      * actually collapsed is removed; the rest are still in use and must survive.
      */
