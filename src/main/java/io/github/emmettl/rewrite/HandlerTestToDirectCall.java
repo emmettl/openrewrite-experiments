@@ -195,14 +195,12 @@ public class HandlerTestToDirectCall extends Recipe {
                     return vd;
                 }
                 // The captured type was usually named only here, as the captor's type argument.
-                if (vd.getTypeExpression() instanceof J.ParameterizedType) {
-                    List<Expression> typeArguments = ((J.ParameterizedType) vd.getTypeExpression()).getTypeParameters();
-                    if (typeArguments != null) {
-                        for (Expression typeArgument : typeArguments) {
-                            JavaType.FullyQualified captured = TypeUtils.asFullyQualified(typeArgument.getType());
-                            if (captured != null) {
-                                maybeRemoveImport(captured.getFullyQualifiedName());
-                            }
+                if (vd.getTypeExpression() instanceof J.ParameterizedType parameterized
+                    && parameterized.getTypeParameters() != null) {
+                    for (Expression typeArgument : parameterized.getTypeParameters()) {
+                        JavaType.FullyQualified captured = TypeUtils.asFullyQualified(typeArgument.getType());
+                        if (captured != null) {
+                            maybeRemoveImport(captured.getFullyQualifiedName());
                         }
                     }
                 }
@@ -275,12 +273,11 @@ public class HandlerTestToDirectCall extends Recipe {
 
     /** Gives the template-generated {@code var} the type it infers, which the template cannot know. */
     private static J typedVar(J declaration, JavaType responseType) {
-        if (responseType == null || !(declaration instanceof J.VariableDeclarations)) {
+        if (responseType == null || !(declaration instanceof J.VariableDeclarations vd)) {
             return declaration;
         }
-        J.VariableDeclarations vd = (J.VariableDeclarations) declaration;
-        if (vd.getTypeExpression() instanceof J.Identifier) {
-            vd = vd.withTypeExpression(((J.Identifier) vd.getTypeExpression()).withType(responseType));
+        if (vd.getTypeExpression() instanceof J.Identifier var) {
+            return vd.withTypeExpression(var.withType(responseType));
         }
         return vd;
     }
@@ -307,13 +304,10 @@ public class HandlerTestToDirectCall extends Recipe {
      */
     private ReplyVerification findReplyVerification(List<Statement> statements, MethodMatcher emit) {
         for (Statement statement : statements) {
-            if (!(statement instanceof J.MethodInvocation)) {
-                continue;
-            }
-            J.MethodInvocation invocation = (J.MethodInvocation) statement;
-            if (!emit.matches(invocation)
-                || !(invocation.getSelect() instanceof J.MethodInvocation)
-                || !VERIFY.matches((J.MethodInvocation) invocation.getSelect())) {
+            if (!(statement instanceof J.MethodInvocation invocation)
+                || !emit.matches(invocation)
+                || !(invocation.getSelect() instanceof J.MethodInvocation verifySelect)
+                || !VERIFY.matches(verifySelect)) {
                 continue;
             }
 
@@ -321,15 +315,14 @@ public class HandlerTestToDirectCall extends Recipe {
             JavaType routingType = null;
             boolean repliesToConstant = false;
             for (Expression argument : invocation.getArguments()) {
-                if (!(argument instanceof J.MethodInvocation)) {
+                if (!(argument instanceof J.MethodInvocation matcher)) {
                     continue;
                 }
-                J.MethodInvocation matcher = (J.MethodInvocation) argument;
                 if (EQ.matches(matcher) && !matcher.getArguments().isEmpty()
                     && matchesConstant(matcher.getArguments().get(0), replyConstant)) {
                     repliesToConstant = true;
-                } else if (CAPTURE.matches(matcher) && matcher.getSelect() instanceof J.Identifier) {
-                    captorName = ((J.Identifier) matcher.getSelect()).getSimpleName();
+                } else if (CAPTURE.matches(matcher) && matcher.getSelect() instanceof J.Identifier captor) {
+                    captorName = captor.getSimpleName();
                 } else if (ANY.matches(matcher) && !matcher.getArguments().isEmpty()) {
                     routingType = classLiteralType(matcher.getArguments().get(0));
                 }
@@ -345,18 +338,14 @@ public class HandlerTestToDirectCall extends Recipe {
     /** The {@code var response = captor.getValue();} that names the value under assertion. */
     private static J.VariableDeclarations findCapturedValue(List<Statement> statements, String captorName) {
         for (Statement statement : statements) {
-            if (!(statement instanceof J.VariableDeclarations)) {
+            if (!(statement instanceof J.VariableDeclarations declarations)
+                || declarations.getVariables().size() != 1) {
                 continue;
             }
-            J.VariableDeclarations declarations = (J.VariableDeclarations) statement;
-            if (declarations.getVariables().size() != 1) {
-                continue;
-            }
-            Expression initializer = declarations.getVariables().get(0).getInitializer();
-            if (initializer instanceof J.MethodInvocation
-                && GET_VALUE.matches((J.MethodInvocation) initializer)
-                && ((J.MethodInvocation) initializer).getSelect() instanceof J.Identifier
-                && captorName.equals(((J.Identifier) ((J.MethodInvocation) initializer).getSelect()).getSimpleName())) {
+            if (declarations.getVariables().get(0).getInitializer() instanceof J.MethodInvocation initializer
+                && GET_VALUE.matches(initializer)
+                && initializer.getSelect() instanceof J.Identifier captor
+                && captorName.equals(captor.getSimpleName())) {
                 return declarations;
             }
         }
@@ -370,27 +359,26 @@ public class HandlerTestToDirectCall extends Recipe {
             if (statement == verification) {
                 return candidate;
             }
-            if (statement instanceof J.MethodInvocation) {
-                candidate = (J.MethodInvocation) statement;
+            if (statement instanceof J.MethodInvocation invocation) {
+                candidate = invocation;
             }
         }
         return null;
     }
 
     private static JavaType classLiteralType(Expression expression) {
-        if (expression instanceof J.FieldAccess && "class".equals(((J.FieldAccess) expression).getSimpleName())) {
-            return ((J.FieldAccess) expression).getTarget().getType();
+        if (expression instanceof J.FieldAccess fieldAccess && "class".equals(fieldAccess.getSimpleName())) {
+            return fieldAccess.getTarget().getType();
         }
         return null;
     }
 
     private static boolean matchesConstant(Expression expression, String fullyQualifiedConstant) {
-        JavaType.Variable field = null;
-        if (expression instanceof J.FieldAccess) {
-            field = ((J.FieldAccess) expression).getName().getFieldType();
-        } else if (expression instanceof J.Identifier) {
-            field = ((J.Identifier) expression).getFieldType();
-        }
+        JavaType.Variable field = switch (expression) {
+            case J.FieldAccess fieldAccess -> fieldAccess.getName().getFieldType();
+            case J.Identifier identifier -> identifier.getFieldType();
+            default -> null;
+        };
         return field != null
                && simpleNameOf(fullyQualifiedConstant).equals(field.getName())
                && TypeUtils.isOfClassType(field.getOwner(), owningTypeOf(fullyQualifiedConstant));

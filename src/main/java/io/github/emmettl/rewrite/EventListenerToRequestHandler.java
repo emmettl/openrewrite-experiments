@@ -22,7 +22,6 @@ import org.openrewrite.java.tree.TypeUtils;
 import org.openrewrite.marker.Markers;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -215,17 +214,16 @@ public class EventListenerToRequestHandler extends Recipe {
              */
             private J.VariableDeclarations routingParameter(List<Statement> parameters, J.MethodInvocation replyEmit) {
                 if (replyEmit.getArguments().size() < 3
-                    || !(replyEmit.getArguments().get(2) instanceof J.Identifier)) {
+                    || !(replyEmit.getArguments().get(2) instanceof J.Identifier routing)) {
                     return null;
                 }
-                String name = ((J.Identifier) replyEmit.getArguments().get(2)).getSimpleName();
+                String name = routing.getSimpleName();
 
                 for (Statement parameter : parameters) {
-                    if (parameter instanceof J.VariableDeclarations) {
-                        List<J.VariableDeclarations.NamedVariable> named =
-                                ((J.VariableDeclarations) parameter).getVariables();
+                    if (parameter instanceof J.VariableDeclarations declaration) {
+                        List<J.VariableDeclarations.NamedVariable> named = declaration.getVariables();
                         if (!named.isEmpty() && name.equals(named.get(0).getSimpleName())) {
-                            return (J.VariableDeclarations) parameter;
+                            return declaration;
                         }
                     }
                 }
@@ -243,7 +241,7 @@ public class EventListenerToRequestHandler extends Recipe {
                     }
                 }
                 if (kept.isEmpty()) {
-                    return Collections.singletonList(new J.Empty(Tree.randomId(), Space.EMPTY, Markers.EMPTY));
+                    return List.of(new J.Empty(Tree.randomId(), Space.EMPTY, Markers.EMPTY));
                 }
                 // The first surviving parameter sits right after `(`, so it must not keep a
                 // separating space inherited from a removed predecessor.
@@ -310,19 +308,18 @@ public class EventListenerToRequestHandler extends Recipe {
      * {@code MessageConstants.SEND_REPLY} or statically imports {@code SEND_REPLY}.
      */
     private static boolean matchesConstant(Expression expression, String fullyQualifiedConstant) {
-        JavaType.Variable field = null;
-        if (expression instanceof J.FieldAccess) {
-            field = ((J.FieldAccess) expression).getName().getFieldType();
-        } else if (expression instanceof J.Identifier) {
-            field = ((J.Identifier) expression).getFieldType();
-        }
+        JavaType.Variable field = switch (expression) {
+            case J.FieldAccess fieldAccess -> fieldAccess.getName().getFieldType();
+            case J.Identifier identifier -> identifier.getFieldType();
+            default -> null;
+        };
         return field != null
                && simpleNameOf(fullyQualifiedConstant).equals(field.getName())
                && TypeUtils.isOfClassType(field.getOwner(), owningTypeOf(fullyQualifiedConstant));
     }
 
     private static Space singleSpace() {
-        return Space.build(" ", Collections.emptyList());
+        return Space.build(" ", List.of());
     }
 
     private static String owningTypeOf(String fullyQualifiedName) {
