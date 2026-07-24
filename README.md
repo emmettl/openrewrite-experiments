@@ -31,6 +31,7 @@ here has negative tests as well as positive ones.
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
 | `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
 | `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
+| `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, and relocates assertions into it. |
 | `Tidy` | Declarative YAML | Composes a local recipe with two built-ins. |
 | `RemoveDebugPrinting` | Declarative YAML | Supplies an **option value** by name to `RemoveMethodInvocation`. |
 
@@ -97,6 +98,42 @@ and the verify (a stack of assertions on an intermediate `var`, a second event `
 captor's `getValue()` assignment supplies the name to bind the result to, so the assertions below it
 keep compiling untouched. Only the captor whose round trip actually collapsed is removed — other
 captor fields are still in use and survive.
+
+### `HandlerErrorTestToThrows`
+
+The error-case companion. The prod recipe rewrites the error emit to `throw
+RequestException.fromReply(reply)`, so a test that captured the error reply becomes one that asserts
+the handler *throws* and unwraps the reply:
+
+```java
+// before
+handler.handleRequest(request, messageInfo);
+verify(eventEmitter).emit(eq(SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
+reset(eventEmitter);
+StaticDataError error = errorCaptor.getValue();
+assertThat(error).isNotNull();
+assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+
+// after
+assertThatThrownBy(() -> handler.handleRequest(request))
+    .isInstanceOfSatisfying(RequestException.class, ex -> {
+        StaticDataError error = (StaticDataError) ex.getReply();
+        assertThat(error).isNotNull();
+        assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+    });
+```
+
+It finds the error verify by its constant, drops the routing argument from the call (same name/type
+logic as the reply recipe), wraps the call in `assertThatThrownBy(() -> …)`, seeds the lambda with a
+cast reply-unwrap (`ex.getReply()`, the accessor is an option), and relocates the `error.*`
+assertions into the lambda body. The `verify` and any `reset(…)` are dropped. The wrapper type
+(`RequestException`) and its accessor are options, so it's not tied to any one messaging library.
+
+Two known limitations: the now-unused `@Captor` field is left in place (an unused-field cleanup is a
+separate pass), and the generated `throw`/unwrap needs the wrapper type on the template's parser
+classpath — same `JavaParser.runtimeClasspath()` note as above.
+
+### Method-type repair (both companions)
 
 One subtlety worth knowing if you write something similar: the recipe also rewrites the *method
 type* on the migrated call. Type attribution is fixed when sources are parsed and is not re-derived
