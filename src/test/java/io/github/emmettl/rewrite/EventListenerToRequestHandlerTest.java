@@ -22,7 +22,8 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
                         "io.github.emmettl.rewrite.fixtures.annotation.RequestHandler",
                         "io.github.emmettl.rewrite.fixtures.EventEmitter emit(..)",
                         "io.github.emmettl.rewrite.fixtures.common.MessageConstants.SEND_REPLY",
-                        "io.github.emmettl.rewrite.fixtures.common.MessageConstants.SEND_ERROR"))
+                        "io.github.emmettl.rewrite.fixtures.common.MessageConstants.SEND_ERROR",
+                        "io.github.emmettl.rewrite.fixtures.common.RequestException.fromReply"))
                 .parser(JavaParser.fromJavaVersion().classpath(JavaParser.runtimeClasspath()));
     }
 
@@ -62,6 +63,7 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
@@ -77,7 +79,7 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
                           eventEmitter.emit("AnEvent", new SomeEventOrOther("someEvent", "someOther"));
                           return new MyResponseType();
                       } catch (Exception e) {
-                          throw new RuntimeException(e);
+                          throw RequestException.fromReply(e);
                       }
                   }
               }
@@ -126,6 +128,7 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
@@ -140,8 +143,69 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
                           eventEmitter.emit("AnEvent", new SomeEventOrOther("someEvent", "someOther"));
                           return new MyResponseType();
                       } catch (Exception e) {
-                          throw new RuntimeException(e);
+                          throw RequestException.fromReply(e);
                       }
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * An early-return guard that emits an error reply and returns — {@code emit(SEND_ERROR, …);
+     * return;} — becomes a throw. Once the emit is a throw, the bare {@code return;} after it is
+     * unreachable (and invalid once the method returns a value), so it is dropped.
+     */
+    @Test
+    void turnsAnEarlyErrorReturnIntoAThrow() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      if (requestType == null) {
+                          eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad request"));
+                          return;
+                      }
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      if (requestType == null) {
+                          throw RequestException.fromReply(new SomeErrorType("bad request"));
+                      }
+                      return new MyResponseType();
                   }
               }
               """

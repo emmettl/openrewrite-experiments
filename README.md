@@ -42,7 +42,8 @@ here has negative tests as well as positive ones.
 | return type | `void` | `MyResponseType` |
 | parameters | `(MyRequestType, MessageInfo)` | `(MyRequestType)` |
 | reply | `emit(SEND_REPLY, new MyResponseType(), messageInfo);` | `return new MyResponseType();` |
-| failure | `emit(SEND_ERROR, e);` | `throw new RuntimeException(e);` |
+| failure | `emit(SEND_ERROR, e);` | `throw RequestException.fromReply(e);` |
+| early error guard | `emit(SEND_ERROR, err); return;` | `throw RequestException.fromReply(err);` |
 | other emits | `emit("AnEvent", …)` | unchanged |
 
 The reply emit is what drives it: its payload argument becomes the return value *and* supplies the
@@ -60,8 +61,17 @@ handleNewTrade(String tradeId, String account)` and friends — is left complete
 half-migrated into something that will not compile, including when it sits in the same class as one
 that does migrate. That case is pinned by a test.
 
-Everything is an option (annotation names, emitter method pattern, the two constants), so it is not
-tied to the fixture package.
+**The error emit becomes a domain throw.** An `emit(SEND_ERROR, …)` is rewritten to
+`throw <wrapper>.fromReply(…)`, where the wrapper is a configurable static factory that wraps an
+error reply in a runtime exception. The same rewrite covers the early-return guard shape
+(`emit(SEND_ERROR, err); return;`): once the emit is a throw, the trailing bare `return;` is
+unreachable — and invalid once the method returns a value — so it is dropped.
+
+Everything is an option (annotation names, emitter method pattern, the two constants, the error
+wrapper factory), so it is not tied to the fixture package. Generating the typed throw needs the
+wrapper type on the template's parser classpath: the recipe passes `JavaParser.runtimeClasspath()`,
+which resolves when the recipe module depends on the library that declares the wrapper (the usual
+setup for a company's own migration recipes).
 
 ### `HandlerTestToDirectCall`
 

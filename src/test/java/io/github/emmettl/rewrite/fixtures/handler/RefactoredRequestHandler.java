@@ -2,6 +2,7 @@ package io.github.emmettl.rewrite.fixtures.handler;
 
 import io.github.emmettl.rewrite.fixtures.EventEmitter;
 import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+import io.github.emmettl.rewrite.fixtures.common.RequestException;
 import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
 import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
 import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
@@ -17,7 +18,7 @@ public class RefactoredRequestHandler {
             eventEmitter.emit("AnEvent", new SomeEventOrOther("someEvent", "someOther"));
             return new MyResponseType();
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw RequestException.fromReply(e);
         }
     }
 }

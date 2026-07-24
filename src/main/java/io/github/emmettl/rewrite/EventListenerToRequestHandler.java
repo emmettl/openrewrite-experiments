@@ -8,6 +8,7 @@ import org.openrewrite.Tree;
 import org.openrewrite.TreeVisitor;
 import org.openrewrite.java.AnnotationMatcher;
 import org.openrewrite.java.JavaIsoVisitor;
+import org.openrewrite.java.JavaParser;
 import org.openrewrite.java.JavaTemplate;
 import org.openrewrite.java.JavaVisitor;
 import org.openrewrite.java.MethodMatcher;
@@ -47,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *     try {
  *         return new MyResponseType();
  *     } catch (Exception e) {
- *         throw new RuntimeException(e);
+ *         throw RequestException.fromReply(e);
  *     }
  * }
  * </pre>
@@ -85,16 +86,25 @@ public class EventListenerToRequestHandler extends Recipe {
             example = "com.mycompany.MessageConstants.SEND_ERROR")
     private final String errorConstant;
 
+    @Option(displayName = "Error wrapper factory",
+            description = "Fully qualified static method that wraps an error reply in a runtime " +
+                          "exception. The error emit becomes a `throw` of this method applied to the " +
+                          "emit's payload.",
+            example = "com.mycompany.RequestException.fromReply")
+    private final String errorWrapperFactory;
+
     public EventListenerToRequestHandler(String eventListenerAnnotation,
                                          String requestHandlerAnnotation,
                                          String emitMethodPattern,
                                          String replyConstant,
-                                         String errorConstant) {
+                                         String errorConstant,
+                                         String errorWrapperFactory) {
         this.eventListenerAnnotation = eventListenerAnnotation;
         this.requestHandlerAnnotation = requestHandlerAnnotation;
         this.emitMethodPattern = emitMethodPattern;
         this.replyConstant = replyConstant;
         this.errorConstant = errorConstant;
+        this.errorWrapperFactory = errorWrapperFactory;
     }
 
     public String getEventListenerAnnotation() {
@@ -115,6 +125,10 @@ public class EventListenerToRequestHandler extends Recipe {
 
     public String getErrorConstant() {
         return errorConstant;
+    }
+
+    public String getErrorWrapperFactory() {
+        return errorWrapperFactory;
     }
 
     @Override
@@ -149,7 +163,7 @@ public class EventListenerToRequestHandler extends Recipe {
                     return super.visitMethodDeclaration(method, ctx);
                 }
 
-                J.MethodInvocation replyEmit = findReplyEmit(method.getBody(), emit);
+                J.MethodInvocation replyEmit = findEmit(method.getBody(), emit, replyConstant);
                 if (replyEmit == null) {
                     // Nothing to turn into a return value — leave the method alone rather than
                     // half-migrate it into something that will not compile.
@@ -174,6 +188,12 @@ public class EventListenerToRequestHandler extends Recipe {
                 maybeRemoveImport(eventListenerAnnotation);
                 maybeRemoveImport(owningTypeOf(replyConstant));
                 maybeRemoveImport(owningTypeOf(errorConstant));
+                if (findEmit(method.getBody(), emit, errorConstant) != null) {
+                    // Force the import (onlyIfReferenced = false): there is an error emit to rewrite,
+                    // and the template-generated throw reference is not reliably attributed enough for
+                    // the reference check to recognise it.
+                    maybeAddImport(owningTypeOf(errorWrapperFactory), false);
+                }
                 if (routing != null) {
                     // The routing parameter's own type is usually left unreferenced by its removal.
                     JavaType.FullyQualified routingType = TypeUtils.asFullyQualified(routing.getType());
@@ -273,6 +293,21 @@ public class EventListenerToRequestHandler extends Recipe {
         public J visitBlock(J.Block block, ExecutionContext ctx) {
             J.Block b = (J.Block) super.visitBlock(block, ctx);
 
+            // An early-return error guard — `emit(SEND_ERROR, reply); return;` — becomes a plain
+            // throw: super already turned the emit into a throw, so the bare `return;` after it is now
+            // unreachable (and invalid once the method returns a value). Drop it.
+            List<Statement> pruned = new ArrayList<>();
+            for (Statement statement : b.getStatements()) {
+                if (statement instanceof J.Return ret
+                    && ret.getExpression() == null
+                    && !pruned.isEmpty()
+                    && pruned.get(pruned.size() - 1) instanceof J.Throw) {
+                    continue;
+                }
+                pruned.add(statement);
+            }
+            b = b.withStatements(pruned);
+
             List<Statement> statements = b.getStatements();
             int replyIndex = -1;
             for (int i = 0; i < statements.size(); i++) {
@@ -315,7 +350,16 @@ public class EventListenerToRequestHandler extends Recipe {
             }
 
             if (matchesConstant(m.getArguments().get(0), errorConstant)) {
-                return JavaTemplate.builder("throw new RuntimeException(#{any(java.lang.Throwable)});")
+                String wrapperType = owningTypeOf(errorWrapperFactory);
+                // Simple name plus `.imports(...)` so the template resolves the type (and the output
+                // stays short); the import statement itself is added by the enclosing visitor.
+                String invocation = simpleNameOf(wrapperType) + "." + simpleNameOf(errorWrapperFactory) + "(#{any()})";
+                // The template needs the wrapper type on its parser classpath to attribute the
+                // generated call — otherwise the reference and its method type come out unresolved.
+                return JavaTemplate.builder("throw " + invocation + ";")
+                        .contextSensitive()
+                        .imports(wrapperType)
+                        .javaParser(JavaParser.fromJavaVersion().classpath(JavaParser.runtimeClasspath()))
                         .build()
                         .apply(getCursor(), m.getCoordinates().replace(), m.getArguments().get(1));
             }
@@ -324,23 +368,23 @@ public class EventListenerToRequestHandler extends Recipe {
         }
     }
 
-    private J.MethodInvocation findReplyEmit(J.Block body, MethodMatcher emit) {
-        AtomicReference<J.MethodInvocation> reply = new AtomicReference<>();
+    private J.MethodInvocation findEmit(J.Block body, MethodMatcher emit, String constant) {
+        AtomicReference<J.MethodInvocation> found = new AtomicReference<>();
         new JavaIsoVisitor<AtomicReference<J.MethodInvocation>>() {
             @Override
             public J.MethodInvocation visitMethodInvocation(J.MethodInvocation method,
-                                                            AtomicReference<J.MethodInvocation> found) {
-                J.MethodInvocation m = super.visitMethodInvocation(method, found);
-                if (found.get() == null
+                                                            AtomicReference<J.MethodInvocation> result) {
+                J.MethodInvocation m = super.visitMethodInvocation(method, result);
+                if (result.get() == null
                     && emit.matches(m)
                     && m.getArguments().size() >= 2
-                    && matchesConstant(m.getArguments().get(0), replyConstant)) {
-                    found.set(m);
+                    && matchesConstant(m.getArguments().get(0), constant)) {
+                    result.set(m);
                 }
                 return m;
             }
-        }.visit(body, reply);
-        return reply.get();
+        }.visit(body, found);
+        return found.get();
     }
 
     /**
