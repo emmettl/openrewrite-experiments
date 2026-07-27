@@ -5,9 +5,11 @@ A playground for writing custom [OpenRewrite](https://docs.openrewrite.org/) rec
 
 ## Requirements
 
-**A JDK (not a JRE) — this repo builds and tests on 25.** OpenRewrite's Java parser drives javac
-internals directly, so the parser artifact has to match the JDK you run on: `rewrite-java-25` here,
-with CI pinned to 25 to match. Swap both together if you move.
+**A JDK (not a JRE) — 21 or 25.** OpenRewrite's Java parser drives javac internals directly, so the
+parser artifact has to match the JDK you run on. Both `rewrite-java-21` and `rewrite-java-25` are on
+the test classpath and `JavaParser.fromJavaVersion()` picks whichever one loads, so the suite runs on
+either; CI builds on both. Add `rewrite-java-17` alongside them to run on 17 too. The code itself
+compiles at `release` 21.
 
 Maven itself needs no install — `./mvnw` bootstraps it. The wrapper jar is downloaded on first run
 and is git-ignored, so there is no binary committed here.
@@ -31,7 +33,8 @@ here has negative tests as well as positive ones.
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
 | `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
 | `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
-| `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, relocates assertions into it, and retires the captor field once nothing else reads it. |
+| `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, and relocates assertions into it. |
+| `UnusedTestFields` | Analysis, shared by both companions | Which fields nothing reads once a rewrite has taken its statements out. Read/write discrimination over a class, and ignoring what is about to be deleted. |
 | `Tidy` | Declarative YAML | Composes a local recipe with two built-ins. |
 | `RemoveDebugPrinting` | Declarative YAML | Supplies an **option value** by name to `RemoveMethodInvocation`. |
 
@@ -96,8 +99,8 @@ since real tests use either. The handler call is then found as the invocation th
 that argument**, so it is located even when `assertThat(…)` and other statements sit between the call
 and the verify (a stack of assertions on an intermediate `var`, a second event `verify`). The
 captor's `getValue()` assignment supplies the name to bind the result to, so the assertions below it
-keep compiling untouched. Only the captor whose round trip actually collapsed is removed — other
-captor fields are still in use and survive.
+keep compiling untouched. The captor and the routing field it leaves behind are removed as [dead test
+state](#dead-test-state-both-companions) — but only the ones whose last reader actually went.
 
 ### `HandlerErrorTestToThrows`
 
@@ -129,17 +132,34 @@ cast reply-unwrap (`ex.getReply()`, the accessor is an option), and relocates th
 assertions into the lambda body. The `verify` and any `reset(…)` are dropped. The wrapper type
 (`RequestException`) and its accessor are options, so it's not tied to any one messaging library.
 
-**The `@Captor` field goes only when nothing still uses it.** The capture and the `getValue()` were
-the captor's only readers in the shape above, so once they are gone the field is dead and is removed
-along with the `ArgumentCaptor`/`Captor` imports. But a captor can be shared — a second test in the
-same class verifying some other emit through it — and there the field is still live, so it stays.
-That is decided before the class body is walked (fields are visited before the methods that use
-them) by asking, for each captor, whether any statement *surviving* the rewrite still names it. The
-captured type's import is deliberately not chased: the generated unwrap casts to it, so it is still
-in use.
-
 One known limitation remains: the generated `throw`/unwrap needs the wrapper type on the template's
 parser classpath — same `JavaParser.runtimeClasspath()` note as above.
+
+### Dead test state (both companions)
+
+Collapsing the round trip strands the state that fed it, and both companions clear it up:
+
+| | why it is dead |
+| --- | --- |
+| `@Captor private ArgumentCaptor<T> captor;` | the `capture()` and the `getValue()` were its only readers |
+| `private final MessageInfo messageInfo = new MessageInfo("corr");` | the migrated call no longer passes it |
+| `private MessageInfo messageInfo;` + `messageInfo = …;` in `@BeforeEach` | same, and the write goes with the field |
+| the `@BeforeEach` itself | only if that write was all it did |
+
+**Only when nothing still reads it**, which is the whole difficulty. Either field can be shared with
+a test this recipe does not migrate — a second test verifying another emit through the same captor,
+an assertion on the routing value — and there it is still live. `UnusedTestFields` decides it by
+walking the class and asking whether every surviving mention of the name is a *write*: its own
+declaration, or an assignment standing alone as a statement. One read anywhere and the field stays,
+along with the writes that feed it. What the recipe is about to delete does not count as a mention,
+which is why the pre-pass hands over the ids of the statements it will drop and the arguments it
+will strip — including the routing argument still sitting in the call being rewritten.
+
+It has to run before the class body is walked, because a field is reached before the methods that
+use it. Imports follow the fields out (`Captor`, `ArgumentCaptor`, `MessageInfo`, `BeforeEach`) via
+`maybeRemoveImport`, which no-ops while anything still references the type — the reply type named as
+the captor's type argument survives in the error recipe for exactly that reason, since the generated
+unwrap casts to it.
 
 ### Method-type repair (both companions)
 
@@ -149,8 +169,10 @@ between recipes, so the LST still describes the handler as it was before — two
 void. The written source is correct either way, since javac re-resolves it, but without that fixup
 the LST contradicts itself and `RewriteTest`'s type validation fails.
 
-Redundant imports left behind (a response type that was only ever named as the captor's type
-argument) are not chased — `RemoveUnusedImports`, or Ctrl-Alt-L, is the cheaper fix.
+The imports each recipe can reason about — its own matchers and constants, and the types of the
+fields it removes — are handed to `maybeRemoveImport`, which drops them only if nothing else still
+references the type. Anything further afield is not chased: `RemoveUnusedImports`, or Ctrl-Alt-L, is
+the cheaper fix.
 
 ### Fixtures
 

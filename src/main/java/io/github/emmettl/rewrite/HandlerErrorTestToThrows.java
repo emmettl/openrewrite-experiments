@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -47,8 +48,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *     });
  * </pre>
  *
- * <p>The {@code @Captor} field goes with it, but only once nothing else refers to it: a captor shared
- * with a test this recipe does not migrate is still live, so it stays.
+ * <p>The state the rewrite orphans goes with it — the {@code @Captor} field, and the routing value
+ * the call no longer passes — but only once nothing else reads them. See {@link UnusedTestFields}.
  */
 public class HandlerErrorTestToThrows extends Recipe {
 
@@ -115,7 +116,8 @@ public class HandlerErrorTestToThrows extends Recipe {
         return "Rewrites a test that captured an error reply from an event emitter and asserted on it " +
                "into one that asserts the handler throws, unwrapping the reply from the caught " +
                "exception and moving the assertions into an `isInstanceOfSatisfying` block. The " +
-               "captor field is removed once nothing else in the test class uses it.";
+               "captor and the routing value the call no longer passes are removed with it, once " +
+               "nothing else in the test class reads them.";
     }
 
     @Override
@@ -124,21 +126,30 @@ public class HandlerErrorTestToThrows extends Recipe {
 
         return Preconditions.check(new UsesMethod<>(emit), new JavaIsoVisitor<ExecutionContext>() {
 
-            /** Captors whose round trip collapses here and that nothing else in the class still uses. */
-            private final Set<String> retiredCaptors = new HashSet<>();
+            /** The state this rewrite orphans in the class being walked. */
+            private UnusedTestFields dead = UnusedTestFields.NONE;
 
             /**
-             * Fields are visited before the methods that use them, so which captors fall out of use has
-             * to be known before the class body is walked.
+             * Fields are visited before the methods that use them, so what falls out of use has to be
+             * known before the class body is walked.
              */
             @Override
             public J.ClassDeclaration visitClassDeclaration(J.ClassDeclaration classDeclaration, ExecutionContext ctx) {
-                retiredCaptors.addAll(deadCaptors(classDeclaration, emit));
-                return super.visitClassDeclaration(classDeclaration, ctx);
+                UnusedTestFields enclosing = dead;
+                dead = orphanedState(classDeclaration, emit);
+                J.ClassDeclaration cd = super.visitClassDeclaration(classDeclaration, ctx);
+                dead = enclosing;
+                return cd;
             }
 
             @Override
             public J.MethodDeclaration visitMethodDeclaration(J.MethodDeclaration method, ExecutionContext ctx) {
+                if (dead.isEmptied(method)) {
+                    // Nothing left to set up. Its annotation import goes too, if it was the last one.
+                    maybeRemoveImport("org.junit.jupiter.api.BeforeEach");
+                    //noinspection ConstantConditions — returning null removes the method.
+                    return null;
+                }
                 Migration migration = analyse(method, emit);
                 if (migration == null) {
                     return super.visitMethodDeclaration(method, ctx);
@@ -169,7 +180,7 @@ public class HandlerErrorTestToThrows extends Recipe {
                         ".isInstanceOfSatisfying(" + wrapperName + ".class, ex -> {\n" +
                         "    " + replyTypeName + " " + errorName + " = (" + replyTypeName + ") ex." + replyAccessor + "();\n" +
                         "})";
-                java.util.UUID handlerCallId = handlerCall.getId();
+                UUID handlerCallId = handlerCall.getId();
                 md = md.withBody((J.Block) new org.openrewrite.java.JavaVisitor<ExecutionContext>() {
                     @Override
                     public J visitMethodInvocation(J.MethodInvocation invocation, ExecutionContext c) {
@@ -196,69 +207,100 @@ public class HandlerErrorTestToThrows extends Recipe {
                 maybeRemoveImport("org.mockito.Mockito.reset");
                 maybeRemoveImport("org.mockito.ArgumentMatchers.eq");
                 maybeRemoveImport(owningTypeOf(errorConstant));
+                // The routing type may have been named only by the matcher and argument just dropped.
+                // maybeRemoveImport is a no-op while it is still referenced, e.g. by a shared field.
+                for (JavaType routingType : verification.routingTypes) {
+                    JavaType.FullyQualified fq = TypeUtils.asFullyQualified(routingType);
+                    if (fq != null) {
+                        maybeRemoveImport(fq.getFullyQualifiedName());
+                    }
+                }
                 return md;
             }
 
             /**
-             * Drops the captor field itself. Runs after the method bodies in the sense that matters —
-             * which captors are dead was settled by the pre-pass in {@code visitClassDeclaration}.
+             * Drops the orphaned fields — the captor, and the routing value the migrated call no
+             * longer passes. Which they are was settled by the pre-pass in
+             * {@code visitClassDeclaration}, because a field is reached before the methods that use it.
              */
             @Override
             public J.VariableDeclarations visitVariableDeclarations(J.VariableDeclarations declarations,
                                                                      ExecutionContext ctx) {
                 J.VariableDeclarations vd = super.visitVariableDeclarations(declarations, ctx);
-                if (vd.getVariables().isEmpty()
-                    || !retiredCaptors.contains(vd.getVariables().get(0).getSimpleName())
-                    || !TypeUtils.isOfClassType(vd.getType(), "org.mockito.ArgumentCaptor")) {
-                    return vd;
-                }
-                // Only a class-level field, not a local: a local captor would have been declared
-                // inside the method body we just rewrote.
-                if (!(getCursor().getParentTreeCursor().getValue() instanceof J.Block)
+                // Only a class-level field, not a local: a local would have been declared inside a
+                // method body, where its scope is the caller's to reason about, not ours.
+                if (!dead.declaresOnlyDeadFields(vd)
+                    || !(getCursor().getParentTreeCursor().getValue() instanceof J.Block)
                     || !(getCursor().getParentTreeCursor().getParentTreeCursor()
                         .getValue() instanceof J.ClassDeclaration)) {
                     return vd;
                 }
-                // Unlike the reply recipe, the captured type's import is left alone: the generated
-                // unwrap casts to it, so it is still named by the migrated test.
-
+                JavaType.FullyQualified fieldType = TypeUtils.asFullyQualified(vd.getType());
+                if (fieldType != null) {
+                    maybeRemoveImport(fieldType.getFullyQualifiedName());
+                }
+                // A captor named the reply type as its type argument, and may have been the only
+                // place that did. Here it is still cast to in the generated unwrap, so this is a
+                // no-op — but it is not the recipe's business to know that.
+                if (vd.getTypeExpression() instanceof J.ParameterizedType parameterized
+                    && parameterized.getTypeParameters() != null) {
+                    for (Expression typeArgument : parameterized.getTypeParameters()) {
+                        JavaType.FullyQualified captured = TypeUtils.asFullyQualified(typeArgument.getType());
+                        if (captured != null) {
+                            maybeRemoveImport(captured.getFullyQualifiedName());
+                        }
+                    }
+                }
                 //noinspection ConstantConditions — returning null removes the field.
+                return null;
+            }
+
+            /** Drops a write to a field that is going with it, typically from a {@code @BeforeEach}. */
+            @Override
+            public J.Assignment visitAssignment(J.Assignment assignment, ExecutionContext ctx) {
+                J.Assignment a = super.visitAssignment(assignment, ctx);
+                if (!dead.isDeadWrite(a)) {
+                    return a;
+                }
+                //noinspection ConstantConditions — returning null removes the statement.
                 return null;
             }
         });
     }
 
     /**
-     * Captor names this recipe retires in {@code classDeclaration}: the round trip collapses, and no
-     * statement that survives the rewrite mentions the captor. A captor shared with a test that does
-     * not migrate — one verifying some other emit — is still live, so it is not returned here.
+     * The state this recipe is about to orphan in {@code classDeclaration}: the captor whose round
+     * trip collapses, and the routing value the migrated call stops passing. Both are only
+     * <em>candidates</em> here — {@link UnusedTestFields} is what decides whether anything still
+     * reads them, since either can be shared with a test this recipe does not migrate.
      */
-    private Set<String> deadCaptors(J.ClassDeclaration classDeclaration, MethodMatcher emit) {
-        Set<String> retired = new HashSet<>();
-        Set<String> used = new HashSet<>();
+    private UnusedTestFields orphanedState(J.ClassDeclaration classDeclaration, MethodMatcher emit) {
+        Set<String> candidates = new HashSet<>();
+        Set<UUID> rewritten = new HashSet<>();
         for (Statement member : classDeclaration.getBody().getStatements()) {
-            if (member instanceof J.VariableDeclarations field
-                && TypeUtils.isOfClassType(field.getType(), "org.mockito.ArgumentCaptor")) {
-                continue;   // a captor's own declaration is not a use of it
-            }
-            if (!(member instanceof J.MethodDeclaration method) || method.getBody() == null) {
-                collectNames(member, used);
+            if (!(member instanceof J.MethodDeclaration method)) {
                 continue;
             }
             Migration migration = analyse(method, emit);
             if (migration == null) {
-                collectNames(method, used);
                 continue;
             }
-            retired.add(migration.verification.captorName);
+            candidates.add(migration.verification.captorName);
+            candidates.addAll(migration.verification.routingNames);
             for (Statement statement : method.getBody().getStatements()) {
-                if (!migration.discards(statement)) {
-                    collectNames(statement, used);
+                if (migration.discards(statement)) {
+                    rewritten.add(statement.getId());
+                }
+            }
+            // The routing argument goes from the call, so the call no longer counts as a use of it.
+            for (Expression argument : droppedArguments(migration.handlerCall, migration.verification)) {
+                rewritten.add(argument.getId());
+                if (argument instanceof J.Identifier id) {
+                    candidates.add(id.getSimpleName());
                 }
             }
         }
-        retired.removeAll(used);
-        return retired;
+        return UnusedTestFields.in(classDeclaration, candidates, rewritten);
     }
 
     /**
@@ -286,20 +328,10 @@ public class HandlerErrorTestToThrows extends Recipe {
         return new Migration(verification, captured, handlerCall, assertions);
     }
 
-    /** Every identifier named anywhere under {@code tree}, used to tell a live captor from a dead one. */
-    private static void collectNames(J tree, Set<String> names) {
-        new JavaIsoVisitor<Set<String>>() {
-            @Override
-            public J.Identifier visitIdentifier(J.Identifier identifier, Set<String> found) {
-                found.add(identifier.getSimpleName());
-                return identifier;
-            }
-        }.visit(tree, names);
-    }
-
-    private static boolean contains(List<Statement> statements, Statement statement) {
-        for (Statement candidate : statements) {
-            if (candidate == statement) {
+    /** Identity membership: these lists hold the very nodes being matched, not equal copies of them. */
+    private static boolean contains(List<? extends J> trees, J tree) {
+        for (J candidate : trees) {
+            if (candidate == tree) {
                 return true;
             }
         }
@@ -327,16 +359,32 @@ public class HandlerErrorTestToThrows extends Recipe {
         }.visitNonNull(chain, 0);
     }
 
+    /**
+     * The arguments {@link #retypedCall} takes out of the handler call — empty when there is nothing
+     * to drop, or when dropping would leave the call with no arguments at all. The pre-pass reads it
+     * too, so what it believes the call stops passing is what the call actually stops passing.
+     */
+    private static List<Expression> droppedArguments(J.MethodInvocation invocation, ErrorVerification verification) {
+        List<Expression> dropped = new ArrayList<>();
+        for (Expression argument : invocation.getArguments()) {
+            if (isRoutingArgument(argument, verification)) {
+                dropped.add(argument);
+            }
+        }
+        return dropped.size() == invocation.getArguments().size() ? List.of() : dropped;
+    }
+
     /** Drops the routing argument from the handler call, keeping its method type in step. */
     private static J.MethodInvocation retypedCall(J.MethodInvocation invocation, ErrorVerification verification) {
         List<Expression> arguments = invocation.getArguments();
+        List<Expression> routing = droppedArguments(invocation, verification);
         List<Integer> dropped = new ArrayList<>();
         for (int i = 0; i < arguments.size(); i++) {
-            if (isRoutingArgument(arguments.get(i), verification)) {
+            if (contains(routing, arguments.get(i))) {
                 dropped.add(i);
             }
         }
-        if (dropped.isEmpty() || dropped.size() == arguments.size()) {
+        if (dropped.isEmpty()) {
             return invocation;
         }
         List<Expression> kept = new ArrayList<>();

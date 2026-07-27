@@ -150,7 +150,6 @@ class HandlerTestToDirectCallTest implements RewriteTest {
               package io.github.emmettl.rewrite.fixtures.test;
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
               import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
@@ -167,8 +166,6 @@ class HandlerTestToDirectCallTest implements RewriteTest {
                   @Mock
                   EventEmitter eventEmitter;
 
-                  private final MessageInfo messageInfo = new MessageInfo("corr");
-
                   @Test
                   public void handleRequestTest() {
                       MyRequestHandler myRequestHandler = new MyRequestHandler();
@@ -177,6 +174,90 @@ class HandlerTestToDirectCallTest implements RewriteTest {
                       assertThat(myRequestHandler).isNotNull();
                       assertThat(reply).isNotNull();
                       verify(eventEmitter).emit(eq("AnEvent"), any());
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The routing value is often a field rather than an inline argument, and often a bare one written
+     * by a {@code @BeforeEach}. Nothing reads it once the call stops passing it, so the field, its
+     * write, and the setup method left with nothing to do all go.
+     */
+    @Test
+    void dropsTheRoutingFieldAssignedInSetUp() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.BeforeEach;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.ArgumentCaptor;
+              import org.mockito.Captor;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+                  @Captor
+                  private ArgumentCaptor<MyResponseType> responseCaptor;
+
+                  private MessageInfo messageInfo;
+
+                  @BeforeEach
+                  void setUp() {
+                      messageInfo = new MessageInfo("corr");
+                  }
+
+                  @Test
+                  public void handleRequestTest() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      myRequestHandler.handleRequest(new MyRequestType(), messageInfo);
+
+                      verify(eventEmitter).emit(eq(MessageConstants.SEND_REPLY), responseCaptor.capture(), eq(messageInfo));
+                      var response = responseCaptor.getValue();
+
+                      assertThat(response).isNotNull();
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+
+                  @Test
+                  public void handleRequestTest() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      var response = myRequestHandler.handleRequest(new MyRequestType());
+
+                      assertThat(response).isNotNull();
                   }
               }
               """

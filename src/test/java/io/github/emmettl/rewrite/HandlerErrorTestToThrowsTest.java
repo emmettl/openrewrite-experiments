@@ -74,7 +74,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
-              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
               import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
@@ -88,8 +87,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
 
                   @Mock
                   EventEmitter eventEmitter;
-
-                  private final MessageInfo messageInfo = new MessageInfo("corr");
 
                   @Test
                   public void handleRequestWithError() {
@@ -168,7 +165,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
-              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
@@ -190,8 +186,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
                   @Captor
                   private ArgumentCaptor<SomeEventOrOther> eventCaptor;
 
-                  private final MessageInfo messageInfo = new MessageInfo("corr");
-
                   @Test
                   public void handleRequestWithError() {
                       MyRequestHandler myRequestHandler = new MyRequestHandler();
@@ -207,6 +201,281 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
                       verify(eventEmitter).emit(eq("AnEvent"), eventCaptor.capture());
 
                       assertThat(eventCaptor.getValue()).isNotNull();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The other shape the routing value comes in: a bare field written by a {@code @BeforeEach}. The
+     * field goes, its write goes with it, and the setup method — left with nothing to set up — goes
+     * too, taking the {@code @BeforeEach} import.
+     */
+    @Test
+    void dropsTheRoutingFieldAssignedInSetUp() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.BeforeEach;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.ArgumentCaptor;
+              import org.mockito.Captor;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+                  @Captor
+                  private ArgumentCaptor<SomeErrorType> errorCaptor;
+
+                  private MessageInfo messageInfo;
+
+                  @BeforeEach
+                  void setUp() {
+                      messageInfo = new MessageInfo("corr");
+                  }
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      myRequestHandler.handleRequest(new MyRequestType(), messageInfo);
+
+                      verify(eventEmitter).emit(eq(MessageConstants.SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
+                      SomeErrorType error = errorCaptor.getValue();
+                      assertThat(error).isNotNull();
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      assertThatThrownBy(() -> myRequestHandler.handleRequest(new MyRequestType()))
+                              .isInstanceOfSatisfying(RequestException.class, ex -> {
+                                  SomeErrorType error = (SomeErrorType) ex.getReply();
+                                  assertThat(error).isNotNull();
+                              });
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * A {@code @BeforeEach} that does more than feed the routing field keeps everything else it does,
+     * and keeps existing.
+     */
+    @Test
+    void keepsTheRestOfASetUpItStillNeeds() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.BeforeEach;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.ArgumentCaptor;
+              import org.mockito.Captor;
+              import org.mockito.Mock;
+              import org.mockito.MockitoAnnotations;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+                  @Captor
+                  private ArgumentCaptor<SomeErrorType> errorCaptor;
+
+                  private MessageInfo messageInfo;
+
+                  @BeforeEach
+                  void setUp() {
+                      MockitoAnnotations.openMocks(this);
+                      messageInfo = new MessageInfo("corr");
+                  }
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      myRequestHandler.handleRequest(new MyRequestType(), messageInfo);
+
+                      verify(eventEmitter).emit(eq(MessageConstants.SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
+                      SomeErrorType error = errorCaptor.getValue();
+                      assertThat(error).isNotNull();
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.BeforeEach;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.Mock;
+              import org.mockito.MockitoAnnotations;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+
+                  @BeforeEach
+                  void setUp() {
+                      MockitoAnnotations.openMocks(this);
+                  }
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      assertThatThrownBy(() -> myRequestHandler.handleRequest(new MyRequestType()))
+                              .isInstanceOfSatisfying(RequestException.class, ex -> {
+                                  SomeErrorType error = (SomeErrorType) ex.getReply();
+                                  assertThat(error).isNotNull();
+                              });
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The routing field is only dead if this was its last reader. A second test still passing it to
+     * something keeps the field, its initialiser, and its import.
+     */
+    @Test
+    void keepsARoutingFieldAnotherTestStillUses() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.ArgumentCaptor;
+              import org.mockito.Captor;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.mockito.ArgumentMatchers.eq;
+              import static org.mockito.Mockito.verify;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+                  @Captor
+                  private ArgumentCaptor<SomeErrorType> errorCaptor;
+
+                  private final MessageInfo messageInfo = new MessageInfo("corr");
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      myRequestHandler.handleRequest(new MyRequestType(), messageInfo);
+
+                      verify(eventEmitter).emit(eq(MessageConstants.SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
+                      SomeErrorType error = errorCaptor.getValue();
+                      assertThat(error).isNotNull();
+                  }
+
+                  @Test
+                  public void carriesTheCorrelationId() {
+                      assertThat(messageInfo.correlationId()).isEqualTo("corr");
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.test;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+              import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
+              import org.junit.jupiter.api.Test;
+              import org.mockito.Mock;
+
+              import static org.assertj.core.api.Assertions.assertThat;
+              import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+              public class MyRequestHandlerTest {
+
+                  @Mock
+                  EventEmitter eventEmitter;
+
+                  private final MessageInfo messageInfo = new MessageInfo("corr");
+
+                  @Test
+                  public void handleRequestWithError() {
+                      MyRequestHandler myRequestHandler = new MyRequestHandler();
+                      assertThatThrownBy(() -> myRequestHandler.handleRequest(new MyRequestType()))
+                              .isInstanceOfSatisfying(RequestException.class, ex -> {
+                                  SomeErrorType error = (SomeErrorType) ex.getReply();
+                                  assertThat(error).isNotNull();
+                              });
+                  }
+
+                  @Test
+                  public void carriesTheCorrelationId() {
+                      assertThat(messageInfo.correlationId()).isEqualTo("corr");
                   }
               }
               """
@@ -272,7 +541,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
 
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
-              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
               import io.github.emmettl.rewrite.fixtures.handler.MyRequestHandler;
@@ -292,8 +560,6 @@ class HandlerErrorTestToThrowsTest implements RewriteTest {
                   EventEmitter eventEmitter;
                   @Captor
                   private ArgumentCaptor<SomeErrorType> errorCaptor;
-
-                  private final MessageInfo messageInfo = new MessageInfo("corr");
 
                   @Test
                   public void handleRequestWithError() {
