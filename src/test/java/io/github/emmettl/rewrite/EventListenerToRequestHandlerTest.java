@@ -267,9 +267,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
                   private EventEmitter eventEmitter;
 
-                  @EventListener("NEW_TRADE")
-                  public void handleNewTrade(String tradeId, String account) {
-                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  @EventListener("AnotherEvent")
+                  public void handleAnotherEvent(String someEvent, String someOther) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(someEvent, someOther));
                   }
 
                   @EventListener(MyRequestType.TYPE)
@@ -292,14 +292,265 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
                   private EventEmitter eventEmitter;
 
-                  @EventListener("NEW_TRADE")
-                  public void handleNewTrade(String tradeId, String account) {
-                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  @EventListener("AnotherEvent")
+                  public void handleAnotherEvent(String someEvent, String someOther) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(someEvent, someOther));
                   }
 
                   @RequestHandler
                   public MyResponseType handleRequest(MyRequestType requestType) {
                       return new MyResponseType();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The asynchronous shape: the reply is emitted from inside a completion stage, so the handler
+     * hands the stage back instead of a value. The mapping lambda does nothing but wrap its
+     * argument, so it collapses to a constructor reference.
+     */
+    @Test
+    void migratesAnAsyncHandlerToACompletableFuture() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      someAsyncClient.fetchSomething("someId")
+                              .thenAccept(thing -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
+                              })
+                              .exceptionally(e -> {
+                                  eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
+                                  return null;
+                              });
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+                      return someAsyncClient.fetchSomething("someId")
+                              .thenApply(MyAsyncResponseType::new)
+                              .exceptionally(e -> {
+                                  throw RequestException.fromReply(new SomeErrorType("bad"));
+                              });
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The same shape with real work inside the stage, and the chain wrapped in a try/catch. The
+     * mapping lambda keeps its body and returns the reply from it; the catch block throws like any
+     * other error emit.
+     */
+    @Test
+    void migratesAnAsyncHandlerThatDoesWorkInsideTheStage() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      try {
+                          someAsyncClient.fetchSomething("someId")
+                                  .thenAccept(thing -> {
+                                      MyAsyncResponseType reply = new MyAsyncResponseType(thing);
+                                      eventEmitter.emit(MessageConstants.SEND_REPLY, reply, messageInfo);
+                                  })
+                                  .exceptionally(e -> {
+                                      eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
+                                      return null;
+                                  });
+                      } catch (Exception e) {
+                          eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("worse"), messageInfo);
+                      }
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+                      try {
+                          return someAsyncClient.fetchSomething("someId")
+                                  .thenApply(thing -> {
+                                      MyAsyncResponseType reply = new MyAsyncResponseType(thing);
+                                      return reply;
+                                  })
+                                  .exceptionally(e -> {
+                                      throw RequestException.fromReply(new SomeErrorType("bad"));
+                                  });
+                      } catch (Exception e) {
+                          throw RequestException.fromReply(new SomeErrorType("worse"));
+                      }
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The accept can be the whole chain, and it can be the async flavour: {@code thenAcceptAsync}
+     * becomes {@code thenApplyAsync}, and the statement it ends is the one that becomes the return.
+     */
+    @Test
+    void migratesAnAsyncHandlerWithNoFailureHandling() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      someAsyncClient.fetchSomething("someId")
+                              .thenAcceptAsync(thing -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
+                              });
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private SomeAsyncClient someAsyncClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+                      return someAsyncClient.fetchSomething("someId")
+                              .thenApplyAsync(MyAsyncResponseType::new);
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * A reply emitted from inside a lambda that is not a stage mapping — this recipe has no idea
+     * what returning from it would mean — so the method is left completely alone.
+     */
+    @Test
+    void leavesRepliesFromOtherLambdasAlone() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeFetchedThing;
+
+              import java.util.List;
+
+              public class ForEachHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      List.of(new SomeFetchedThing("id")).forEach(thing -> {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
+                      });
                   }
               }
               """

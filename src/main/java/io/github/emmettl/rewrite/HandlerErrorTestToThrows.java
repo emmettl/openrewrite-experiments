@@ -17,7 +17,10 @@ import org.openrewrite.java.tree.Statement;
 import org.openrewrite.java.tree.TypeUtils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -29,9 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * handler.handleRequest(request, messageInfo);
  * verify(eventEmitter).emit(eq(SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
  * reset(eventEmitter);
- * StaticDataError error = errorCaptor.getValue();
+ * SomeErrorType error = errorCaptor.getValue();
  * assertThat(error).isNotNull();
- * assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+ * assertThat(error.ohNo()).isEqualTo("bad");
  * </pre>
  *
  * <p>After (the handler now throws {@code RequestException.fromReply(error)}, so the reply is reached
@@ -39,11 +42,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <pre>
  * assertThatThrownBy(() -&gt; handler.handleRequest(request))
  *     .isInstanceOfSatisfying(RequestException.class, ex -&gt; {
- *         StaticDataError error = (StaticDataError) ex.getReply();
+ *         SomeErrorType error = (SomeErrorType) ex.getReply();
  *         assertThat(error).isNotNull();
- *         assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+ *         assertThat(error.ohNo()).isEqualTo("bad");
  *     });
  * </pre>
+ *
+ * <p>The state the rewrite orphans goes with it — the {@code @Captor} field, and the routing value
+ * the call no longer passes — but only once nothing else reads them. See {@link UnusedTestFields}.
  */
 public class HandlerErrorTestToThrows extends Recipe {
 
@@ -109,7 +115,9 @@ public class HandlerErrorTestToThrows extends Recipe {
     public String getDescription() {
         return "Rewrites a test that captured an error reply from an event emitter and asserted on it " +
                "into one that asserts the handler throws, unwrapping the reply from the caught " +
-               "exception and moving the assertions into an `isInstanceOfSatisfying` block.";
+               "exception and moving the assertions into an `isInstanceOfSatisfying` block. The " +
+               "captor and the routing value the call no longer passes are removed with it, once " +
+               "nothing else in the test class reads them.";
     }
 
     @Override
@@ -118,38 +126,45 @@ public class HandlerErrorTestToThrows extends Recipe {
 
         return Preconditions.check(new UsesMethod<>(emit), new JavaIsoVisitor<ExecutionContext>() {
 
+            /** The state this rewrite orphans in the class being walked. */
+            private UnusedTestFields dead = UnusedTestFields.NONE;
+
+            /**
+             * Fields are visited before the methods that use them, so what falls out of use has to be
+             * known before the class body is walked.
+             */
+            @Override
+            public J.ClassDeclaration visitClassDeclaration(J.ClassDeclaration classDeclaration, ExecutionContext ctx) {
+                UnusedTestFields enclosing = dead;
+                dead = orphanedState(classDeclaration, emit);
+                J.ClassDeclaration cd = super.visitClassDeclaration(classDeclaration, ctx);
+                dead = enclosing;
+                return cd;
+            }
+
             @Override
             public J.MethodDeclaration visitMethodDeclaration(J.MethodDeclaration method, ExecutionContext ctx) {
-                if (method.getBody() == null) {
+                if (dead.isEmptied(method)) {
+                    // Nothing left to set up. Its annotation import goes too, if it was the last one.
+                    maybeRemoveImport("org.junit.jupiter.api.BeforeEach");
+                    //noinspection ConstantConditions — returning null removes the method.
+                    return null;
+                }
+                Migration migration = analyse(method, emit);
+                if (migration == null) {
                     return super.visitMethodDeclaration(method, ctx);
                 }
-                List<Statement> statements = method.getBody().getStatements();
-
-                ErrorVerification verification = findErrorVerification(statements, emit);
-                if (verification == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-                J.VariableDeclarations captured = findCapturedValue(statements, verification.captorName);
-                J.MethodInvocation handlerCall = findHandlerCall(statements, verification);
-                if (captured == null || handlerCall == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-
-                String errorName = captured.getVariables().get(0).getSimpleName();
-                JavaType errorType = captured.getVariables().get(0).getType();
-                if (errorType == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-                List<Statement> assertions = errorAssertions(statements, captured, errorName);
+                ErrorVerification verification = migration.verification;
+                J.MethodInvocation handlerCall = migration.handlerCall;
+                String errorName = migration.captured.getVariables().get(0).getSimpleName();
+                JavaType errorType = migration.captured.getVariables().get(0).getType();
+                List<Statement> assertions = migration.assertions;
 
                 // Drop the verify, any reset, the captured declaration, and the assertions being moved;
                 // the handler call stays as the anchor the chain replaces.
                 List<Statement> kept = new ArrayList<>();
-                for (Statement statement : statements) {
-                    if (statement == verification.statement
-                        || statement == captured
-                        || assertions.contains(statement)
-                        || (statement instanceof J.MethodInvocation mi && RESET.matches(mi))) {
+                for (Statement statement : method.getBody().getStatements()) {
+                    if (migration.discards(statement) || contains(assertions, statement)) {
                         continue;
                     }
                     kept.add(statement);
@@ -165,7 +180,7 @@ public class HandlerErrorTestToThrows extends Recipe {
                         ".isInstanceOfSatisfying(" + wrapperName + ".class, ex -> {\n" +
                         "    " + replyTypeName + " " + errorName + " = (" + replyTypeName + ") ex." + replyAccessor + "();\n" +
                         "})";
-                java.util.UUID handlerCallId = handlerCall.getId();
+                UUID handlerCallId = handlerCall.getId();
                 md = md.withBody((J.Block) new org.openrewrite.java.JavaVisitor<ExecutionContext>() {
                     @Override
                     public J visitMethodInvocation(J.MethodInvocation invocation, ExecutionContext c) {
@@ -192,9 +207,135 @@ public class HandlerErrorTestToThrows extends Recipe {
                 maybeRemoveImport("org.mockito.Mockito.reset");
                 maybeRemoveImport("org.mockito.ArgumentMatchers.eq");
                 maybeRemoveImport(owningTypeOf(errorConstant));
+                // The routing type may have been named only by the matcher and argument just dropped.
+                // maybeRemoveImport is a no-op while it is still referenced, e.g. by a shared field.
+                for (JavaType routingType : verification.routingTypes) {
+                    JavaType.FullyQualified fq = TypeUtils.asFullyQualified(routingType);
+                    if (fq != null) {
+                        maybeRemoveImport(fq.getFullyQualifiedName());
+                    }
+                }
                 return md;
             }
+
+            /**
+             * Drops the orphaned fields — the captor, and the routing value the migrated call no
+             * longer passes. Which they are was settled by the pre-pass in
+             * {@code visitClassDeclaration}, because a field is reached before the methods that use it.
+             */
+            @Override
+            public J.VariableDeclarations visitVariableDeclarations(J.VariableDeclarations declarations,
+                                                                     ExecutionContext ctx) {
+                J.VariableDeclarations vd = super.visitVariableDeclarations(declarations, ctx);
+                // Only a class-level field, not a local: a local would have been declared inside a
+                // method body, where its scope is the caller's to reason about, not ours.
+                if (!dead.declaresOnlyDeadFields(vd)
+                    || !(getCursor().getParentTreeCursor().getValue() instanceof J.Block)
+                    || !(getCursor().getParentTreeCursor().getParentTreeCursor()
+                        .getValue() instanceof J.ClassDeclaration)) {
+                    return vd;
+                }
+                JavaType.FullyQualified fieldType = TypeUtils.asFullyQualified(vd.getType());
+                if (fieldType != null) {
+                    maybeRemoveImport(fieldType.getFullyQualifiedName());
+                }
+                // A captor named the reply type as its type argument, and may have been the only
+                // place that did. Here it is still cast to in the generated unwrap, so this is a
+                // no-op — but it is not the recipe's business to know that.
+                if (vd.getTypeExpression() instanceof J.ParameterizedType parameterized
+                    && parameterized.getTypeParameters() != null) {
+                    for (Expression typeArgument : parameterized.getTypeParameters()) {
+                        JavaType.FullyQualified captured = TypeUtils.asFullyQualified(typeArgument.getType());
+                        if (captured != null) {
+                            maybeRemoveImport(captured.getFullyQualifiedName());
+                        }
+                    }
+                }
+                //noinspection ConstantConditions — returning null removes the field.
+                return null;
+            }
+
+            /** Drops a write to a field that is going with it, typically from a {@code @BeforeEach}. */
+            @Override
+            public J.Assignment visitAssignment(J.Assignment assignment, ExecutionContext ctx) {
+                J.Assignment a = super.visitAssignment(assignment, ctx);
+                if (!dead.isDeadWrite(a)) {
+                    return a;
+                }
+                //noinspection ConstantConditions — returning null removes the statement.
+                return null;
+            }
         });
+    }
+
+    /**
+     * The state this recipe is about to orphan in {@code classDeclaration}: the captor whose round
+     * trip collapses, and the routing value the migrated call stops passing. Both are only
+     * <em>candidates</em> here — {@link UnusedTestFields} is what decides whether anything still
+     * reads them, since either can be shared with a test this recipe does not migrate.
+     */
+    private UnusedTestFields orphanedState(J.ClassDeclaration classDeclaration, MethodMatcher emit) {
+        Set<String> candidates = new HashSet<>();
+        Set<UUID> rewritten = new HashSet<>();
+        for (Statement member : classDeclaration.getBody().getStatements()) {
+            if (!(member instanceof J.MethodDeclaration method)) {
+                continue;
+            }
+            Migration migration = analyse(method, emit);
+            if (migration == null) {
+                continue;
+            }
+            candidates.add(migration.verification.captorName);
+            candidates.addAll(migration.verification.routingNames);
+            for (Statement statement : method.getBody().getStatements()) {
+                if (migration.discards(statement)) {
+                    rewritten.add(statement.getId());
+                }
+            }
+            // The routing argument goes from the call, so the call no longer counts as a use of it.
+            for (Expression argument : droppedArguments(migration.handlerCall, migration.verification)) {
+                rewritten.add(argument.getId());
+                if (argument instanceof J.Identifier id) {
+                    candidates.add(id.getSimpleName());
+                }
+            }
+        }
+        return UnusedTestFields.in(classDeclaration, candidates, rewritten);
+    }
+
+    /**
+     * Recognises the full error round trip — call, verification, captured value, and a captured value
+     * with a type to cast to. Anything less is not safely collapsible, so the method is left alone.
+     * The rewrite and the dead-captor pre-pass both go through here, so they cannot disagree about
+     * which methods migrate.
+     */
+    private Migration analyse(J.MethodDeclaration method, MethodMatcher emit) {
+        if (method.getBody() == null) {
+            return null;
+        }
+        List<Statement> statements = method.getBody().getStatements();
+        ErrorVerification verification = findErrorVerification(statements, emit);
+        if (verification == null) {
+            return null;
+        }
+        J.VariableDeclarations captured = findCapturedValue(statements, verification.captorName);
+        J.MethodInvocation handlerCall = findHandlerCall(statements, verification);
+        if (captured == null || handlerCall == null || captured.getVariables().get(0).getType() == null) {
+            return null;
+        }
+        List<Statement> assertions =
+                errorAssertions(statements, captured, captured.getVariables().get(0).getSimpleName());
+        return new Migration(verification, captured, handlerCall, assertions);
+    }
+
+    /** Identity membership: these lists hold the very nodes being matched, not equal copies of them. */
+    private static boolean contains(List<? extends J> trees, J tree) {
+        for (J candidate : trees) {
+            if (candidate == tree) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Appends the collected assertion statements into the {@code isInstanceOfSatisfying} lambda body. */
@@ -218,16 +359,32 @@ public class HandlerErrorTestToThrows extends Recipe {
         }.visitNonNull(chain, 0);
     }
 
+    /**
+     * The arguments {@link #retypedCall} takes out of the handler call — empty when there is nothing
+     * to drop, or when dropping would leave the call with no arguments at all. The pre-pass reads it
+     * too, so what it believes the call stops passing is what the call actually stops passing.
+     */
+    private static List<Expression> droppedArguments(J.MethodInvocation invocation, ErrorVerification verification) {
+        List<Expression> dropped = new ArrayList<>();
+        for (Expression argument : invocation.getArguments()) {
+            if (isRoutingArgument(argument, verification)) {
+                dropped.add(argument);
+            }
+        }
+        return dropped.size() == invocation.getArguments().size() ? List.of() : dropped;
+    }
+
     /** Drops the routing argument from the handler call, keeping its method type in step. */
     private static J.MethodInvocation retypedCall(J.MethodInvocation invocation, ErrorVerification verification) {
         List<Expression> arguments = invocation.getArguments();
+        List<Expression> routing = droppedArguments(invocation, verification);
         List<Integer> dropped = new ArrayList<>();
         for (int i = 0; i < arguments.size(); i++) {
-            if (isRoutingArgument(arguments.get(i), verification)) {
+            if (contains(routing, arguments.get(i))) {
                 dropped.add(i);
             }
         }
-        if (dropped.isEmpty() || dropped.size() == arguments.size()) {
+        if (dropped.isEmpty()) {
             return invocation;
         }
         List<Expression> kept = new ArrayList<>();
@@ -440,6 +597,32 @@ public class HandlerErrorTestToThrows extends Recipe {
     private static String typeNameOf(JavaType type) {
         JavaType.FullyQualified fullyQualified = TypeUtils.asFullyQualified(type);
         return fullyQualified == null ? type.toString() : fullyQualified.getFullyQualifiedName();
+    }
+
+    /** One migratable test method: what anchors the rewrite, and what the rewrite takes away. */
+    private static class Migration {
+        private final ErrorVerification verification;
+        private final J.VariableDeclarations captured;
+        private final J.MethodInvocation handlerCall;
+        private final List<Statement> assertions;
+
+        private Migration(ErrorVerification verification, J.VariableDeclarations captured,
+                          J.MethodInvocation handlerCall, List<Statement> assertions) {
+            this.verification = verification;
+            this.captured = captured;
+            this.handlerCall = handlerCall;
+            this.assertions = assertions;
+        }
+
+        /**
+         * Statements the rewrite deletes outright. The moved assertions are not among them — they
+         * live on inside the lambda, so a captor they mention would still be in use.
+         */
+        private boolean discards(Statement statement) {
+            return statement == verification.statement
+                   || statement == captured
+                   || (statement instanceof J.MethodInvocation invocation && RESET.matches(invocation));
+        }
     }
 
     private static class ErrorVerification {

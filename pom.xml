@@ -68,9 +68,15 @@
     </dependency>
     <!--
       The parser that turns test source into an LST. It drives the JDK's own javac internals, so it
-      must match the JDK the tests run on — hence rewrite-java-25 and a CI pinned to 25. Add
-      rewrite-java-17/-21 alongside it if you want tests that parse at those language levels.
+      must match the JDK the tests run on: `JavaParser.fromJavaVersion()` picks whichever of these is
+      loadable on the running JDK. Both are here so the suite runs on 21 or 25 — add rewrite-java-17
+      alongside them if you want to run on 17 too.
     -->
+    <dependency>
+      <groupId>org.openrewrite</groupId>
+      <artifactId>rewrite-java-21</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.openrewrite</groupId>
       <artifactId>rewrite-java-25</artifactId>
