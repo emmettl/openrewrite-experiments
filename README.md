@@ -31,7 +31,8 @@ here has negative tests as well as positive ones.
 | --- | --- | --- |
 | `RemoveRedundantStringToString` | Java visitor | Drops `.toString()` on an expression already typed `String`. `MethodMatcher`, a `TypeUtils` check on the receiver, a `Preconditions.check` guard, and prefix preservation. |
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
-| `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
+| `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method, including one that replies from a `CompletionStage`. Annotation replacement, return-type synthesis (`CompletableFuture<Reply>` and all), parameter removal, `JavaTemplate`, and import bookkeeping. |
+| `AsyncReplyChain` | Analysis, used by the above | Finds the stage a reply is emitted from, by walking out from the emit. Cursor-path ancestry, and knowing when to decline. |
 | `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
 | `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, and relocates assertions into it. |
 | `UnusedTestFields` | Analysis, shared by both companions | Which fields nothing reads once a rewrite has taken its statements out. Read/write discrimination over a class, and ignoring what is about to be deleted. |
@@ -76,6 +77,68 @@ wrapper factory), so it is not tied to the fixture package. Generating the typed
 wrapper type on the template's parser classpath: the recipe passes `JavaParser.runtimeClasspath()`,
 which resolves when the recipe module depends on the library that declares the wrapper (the usual
 setup for a company's own migration recipes).
+
+#### Replying from a future
+
+When the reply is produced by a future, the emit sits inside the stage rather than in the method
+body, and the migrated handler hands the stage back instead of a value:
+
+```java
+// before
+@EventListener(LoadTradeRequest.TYPE_ID)
+public void handleLoadTrade(LoadTradeRequest request, MessageInfo messageInfo) {
+    tradeServiceClient.fetchTradeDetails(valor)
+            .thenAccept(details -> {
+                eventEmitter.emit(SEND_REPLY, new LoadTradeReply(details), messageInfo);
+            })
+            .exceptionally(e -> {
+                eventEmitter.emit(SEND_ERROR, new CalculatorError(UNABLE_TO_PERFORM_REQUEST), messageInfo);
+                return null;
+            });
+}
+
+// after
+@RequestHandler
+public CompletableFuture<LoadTradeReply> handleLoadTrade(LoadTradeRequest request) {
+    return tradeServiceClient.fetchTradeDetails(valor)
+            .thenApply(LoadTradeReply::new)
+            .exceptionally(e -> {
+                throw RequestException.fromReply(new CalculatorError(UNABLE_TO_PERFORM_REQUEST));
+            });
+}
+```
+
+| | before | after |
+| --- | --- | --- |
+| return type | `void` | `CompletableFuture<LoadTradeReply>` |
+| the stage | `.thenAccept(details -> { … emit(SEND_REPLY, reply, messageInfo); })` | `.thenApply(details -> { … return reply; })` |
+| a mapping that only wraps | `.thenApply(details -> new LoadTradeReply(details))` | `.thenApply(LoadTradeReply::new)` |
+| the chain | `client.fetch(…)…;` | `return client.fetch(…)…;` |
+| failure handler | `emit(SEND_ERROR, err, messageInfo); return null;` | `throw RequestException.fromReply(err);` |
+
+**The emit inside the stage drives it, same as the synchronous case.** `AsyncReplyChain` walks out
+from the reply emit to find the three things the migration needs: the `thenAccept` that swallows the
+reply (it becomes the `thenApply` that produces one), the statement holding the whole chain (it
+becomes the `return`), and the stage type the chain already has. That last one is why the return type
+follows the source — a client declaring `CompletionStage` yields a handler returning
+`CompletionStage`, not a `CompletableFuture` the code never mentioned. The stale `Void` is dropped
+and every link from the mapping onwards is retyped to carry the reply, so the LST agrees with what is
+written.
+
+The failure handler needs nothing new: the error emit becomes a `throw` by the ordinary rule, and the
+`return null;` that followed it is dropped as unreachable — the same pruning as the early-return
+guard. A lambda that always throws is still a valid `Function`, so `exceptionally` keeps compiling.
+
+`thenAcceptAsync` migrates to `thenApplyAsync`, and the accept can be the whole chain rather than a
+link in one.
+
+**Only the chain shape is recognised.** A reply emitted from inside any other lambda — a `forEach`, a
+callback, a stage this recipe cannot follow — leaves the method completely untouched, because
+"return from here" has no meaning it can be sure of. That is a test, not an accident: before this,
+such a method would have been half-migrated into source that does not compile. Two other limits are
+worth knowing: the chain has to be the last statement of its block (returning it early would skip
+whatever followed), and the constructor-reference collapse only fires for exactly `p -> new T(p)` —
+anything else keeps its lambda.
 
 ### `HandlerTestToDirectCall`
 

@@ -308,6 +308,257 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
     }
 
     /**
+     * The asynchronous shape: the reply is emitted from inside a completion stage, so the handler
+     * hands the stage back instead of a value. The mapping lambda does nothing but wrap its
+     * argument, so it collapses to a constructor reference.
+     */
+    @Test
+    void migratesAnAsyncHandlerToACompletableFuture() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
+                      tradeServiceClient.fetchTradeDetails("valor")
+                              .thenAccept(details -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                              })
+                              .exceptionally(e -> {
+                                  eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
+                                  return null;
+                              });
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
+                      return tradeServiceClient.fetchTradeDetails("valor")
+                              .thenApply(MyTradeReply::new)
+                              .exceptionally(e -> {
+                                  throw RequestException.fromReply(new SomeErrorType("bad"));
+                              });
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The same shape with real work inside the stage, and the chain wrapped in a try/catch. The
+     * mapping lambda keeps its body and returns the reply from it; the catch block throws like any
+     * other error emit.
+     */
+    @Test
+    void migratesAnAsyncHandlerThatDoesWorkInsideTheStage() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
+                      try {
+                          tradeServiceClient.fetchTradeDetails("valor")
+                                  .thenAccept(details -> {
+                                      MyTradeReply reply = new MyTradeReply(details);
+                                      eventEmitter.emit(MessageConstants.SEND_REPLY, reply, messageInfo);
+                                  })
+                                  .exceptionally(e -> {
+                                      eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
+                                      return null;
+                                  });
+                      } catch (Exception e) {
+                          eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("worse"), messageInfo);
+                      }
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
+                      try {
+                          return tradeServiceClient.fetchTradeDetails("valor")
+                                  .thenApply(details -> {
+                                      MyTradeReply reply = new MyTradeReply(details);
+                                      return reply;
+                                  })
+                                  .exceptionally(e -> {
+                                      throw RequestException.fromReply(new SomeErrorType("bad"));
+                                  });
+                      } catch (Exception e) {
+                          throw RequestException.fromReply(new SomeErrorType("worse"));
+                      }
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The accept can be the whole chain, and it can be the async flavour: {@code thenAcceptAsync}
+     * becomes {@code thenApplyAsync}, and the statement it ends is the one that becomes the return.
+     */
+    @Test
+    void migratesAnAsyncHandlerWithNoFailureHandling() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
+                      tradeServiceClient.fetchTradeDetails("valor")
+                              .thenAcceptAsync(details -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                              });
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+
+              import java.util.concurrent.CompletableFuture;
+
+              public class AsyncRequestHandler {
+
+                  private EventEmitter eventEmitter;
+                  private TradeServiceClient tradeServiceClient;
+
+                  @RequestHandler
+                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
+                      return tradeServiceClient.fetchTradeDetails("valor")
+                              .thenApplyAsync(MyTradeReply::new);
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * A reply emitted from inside a lambda that is not a stage mapping — this recipe has no idea
+     * what returning from it would mean — so the method is left completely alone.
+     */
+    @Test
+    void leavesRepliesFromOtherLambdasAlone() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
+              import io.github.emmettl.rewrite.fixtures.domain.TradeDetails;
+
+              import java.util.List;
+
+              public class ForEachHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
+                      List.of(new TradeDetails("valor")).forEach(details -> {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                      });
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * Emitting is not by itself a reason to rewrite — only methods carrying the listener annotation
      * are migrated.
      */

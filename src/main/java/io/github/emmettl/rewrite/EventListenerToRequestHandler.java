@@ -15,7 +15,10 @@ import org.openrewrite.java.MethodMatcher;
 import org.openrewrite.java.search.UsesMethod;
 import org.openrewrite.java.tree.Expression;
 import org.openrewrite.java.tree.J;
+import org.openrewrite.java.tree.JContainer;
+import org.openrewrite.java.tree.JRightPadded;
 import org.openrewrite.java.tree.JavaType;
+import org.openrewrite.java.tree.NameTree;
 import org.openrewrite.java.tree.Space;
 import org.openrewrite.java.tree.Statement;
 import org.openrewrite.java.tree.TypeTree;
@@ -23,7 +26,10 @@ import org.openrewrite.java.tree.TypeUtils;
 import org.openrewrite.marker.Markers;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -57,6 +63,18 @@ import java.util.concurrent.atomic.AtomicReference;
  * value <em>and</em> supplies the new return type, and its trailing argument names the routing
  * parameter that is no longer needed. Emits that are neither the reply nor the error — genuine
  * domain events — are left alone.
+ *
+ * <p>A handler whose reply comes from a future replies from inside a stage instead, and migrates to
+ * one that hands the stage back:
+ * <pre>
+ * &#64;RequestHandler
+ * public CompletableFuture&lt;Reply&gt; handleRequest(MyRequestType request) {
+ *     return client.fetchDetails(request.id())
+ *             .thenApply(Reply::new)
+ *             .exceptionally(e -&gt; { throw RequestException.fromReply(error); });
+ * }
+ * </pre>
+ * See {@link AsyncReplyChain} for what that shape is and how much of it is recognised.
  */
 public class EventListenerToRequestHandler extends Recipe {
 
@@ -140,7 +158,8 @@ public class EventListenerToRequestHandler extends Recipe {
     public String getDescription() {
         return "Converts a method that receives a request as an event and emits its reply through an " +
                "event emitter into one that takes the request and returns the response directly, " +
-               "throwing on failure instead of emitting an error.";
+               "throwing on failure instead of emitting an error. A handler that replies from inside " +
+               "a completion stage returns the stage instead, mapping the reply out of it.";
     }
 
     @Override
@@ -175,14 +194,36 @@ public class EventListenerToRequestHandler extends Recipe {
                     return super.visitMethodDeclaration(method, ctx);
                 }
 
+                // A reply emitted from inside a lambda is the asynchronous shape: the handler has to
+                // hand back the stage instead of a value. Only the chain shape is understood; any
+                // other lambda is left alone rather than half-migrated.
+                AsyncReplyChain async = null;
+                if (AsyncReplyChain.repliesFromInsideALambda(method.getBody(), replyEmit)) {
+                    async = AsyncReplyChain.around(method.getBody(), replyEmit);
+                    if (async == null) {
+                        return super.visitMethodDeclaration(method, ctx);
+                    }
+                }
+
                 J.VariableDeclarations routing = routingParameter(method.getParameters(), replyEmit);
 
                 J.MethodDeclaration md = method
                         .withLeadingAnnotations(replaceListenerAnnotation(method.getLeadingAnnotations(), listenerAnnotation))
                         .withParameters(without(method.getParameters(), routing));
-                md = withReturnType(md, responseType);
+                md = withReturnType(md, async == null ? responseType : async.stageOf(responseType));
                 md = md.withBody((J.Block) new EmitRewriter(emit)
                         .visitNonNull(md.getBody(), ctx, getCursor()));
+                if (async != null) {
+                    // The emits are rewritten by now, so the stage carries a value: map instead of
+                    // accept, retype what follows, and return the chain.
+                    md = md.withBody((J.Block) new StageRewriter(async, responseType)
+                            .visitNonNull(md.getBody(), ctx, getCursor()));
+                    // Second pass, once the chain reads `thenApply`: a lambda that does nothing but
+                    // build the reply is a constructor reference, and only now does it type-check.
+                    md = md.withBody((J.Block) new ConstructorReferenceRewriter(async)
+                            .visitNonNull(md.getBody(), ctx, getCursor()));
+                    maybeAddImport(async.stageTypeName());
+                }
 
                 maybeAddImport(requestHandlerAnnotation);
                 maybeRemoveImport(eventListenerAnnotation);
@@ -220,12 +261,42 @@ public class EventListenerToRequestHandler extends Recipe {
             }
 
             private J.MethodDeclaration withReturnType(J.MethodDeclaration md, JavaType responseType) {
-                TypeTree returnType = TypeTree.build(simpleNameOf(typeNameOf(responseType))).withType(responseType);
+                TypeTree returnType = typeTreeFor(responseType);
                 // Keep whatever whitespace separated `void` from the modifiers before it.
                 Space prefix = md.getReturnTypeExpression() == null
                         ? singleSpace()
                         : md.getReturnTypeExpression().getPrefix();
-                return md.withReturnTypeExpression(returnType.withPrefix(prefix));
+                J.MethodDeclaration withType = md.withReturnTypeExpression(returnType.withPrefix(prefix));
+                // Keep the declaration's own method type in step, so the LST does not go on
+                // describing a handler that returns void.
+                JavaType.Method methodType = withType.getMethodType();
+                if (methodType == null) {
+                    return withType;
+                }
+                JavaType.Method migrated = methodType.withReturnType(responseType);
+                return withType.withMethodType(migrated).withName(withType.getName().withType(migrated));
+            }
+
+            /**
+             * The written form of a type. A parameterized one — {@code CompletableFuture<Reply>} —
+             * is built as such rather than named, so both halves carry their own attribution.
+             */
+            private TypeTree typeTreeFor(JavaType type) {
+                if (!(type instanceof JavaType.Parameterized parameterized)
+                    || parameterized.getTypeParameters().isEmpty()) {
+                    return TypeTree.build(simpleNameOf(typeNameOf(type))).withType(type);
+                }
+                // The name carries the raw class, not the parameterized type: that is what the LST
+                // expects of a parameterized type's `clazz`, and type validation checks for it.
+                TypeTree raw = TypeTree.build(simpleNameOf(parameterized.getFullyQualifiedName()));
+                List<JRightPadded<Expression>> arguments = new ArrayList<>();
+                for (JavaType argument : parameterized.getTypeParameters()) {
+                    Expression named = TypeTree.build(simpleNameOf(typeNameOf(argument)));
+                    arguments.add(JRightPadded.build(named.withType(argument)));
+                }
+                return new J.ParameterizedType(Tree.randomId(), Space.EMPTY, Markers.EMPTY,
+                        (NameTree) raw.withType(parameterized.getType()),
+                        JContainer.build(Space.EMPTY, arguments, Markers.EMPTY), parameterized);
             }
 
             /**
@@ -295,11 +366,12 @@ public class EventListenerToRequestHandler extends Recipe {
 
             // An early-return error guard — `emit(SEND_ERROR, reply); return;` — becomes a plain
             // throw: super already turned the emit into a throw, so the bare `return;` after it is now
-            // unreachable (and invalid once the method returns a value). Drop it.
+            // unreachable (and invalid once the method returns a value). Drop it. The same goes for
+            // the `return null;` that closes an `exceptionally` handler once its emit throws.
             List<Statement> pruned = new ArrayList<>();
             for (Statement statement : b.getStatements()) {
                 if (statement instanceof J.Return ret
-                    && ret.getExpression() == null
+                    && returnsNothing(ret)
                     && !pruned.isEmpty()
                     && pruned.get(pruned.size() - 1) instanceof J.Throw) {
                     continue;
@@ -356,15 +428,160 @@ public class EventListenerToRequestHandler extends Recipe {
                 String invocation = simpleNameOf(wrapperType) + "." + simpleNameOf(errorWrapperFactory) + "(#{any()})";
                 // The template needs the wrapper type on its parser classpath to attribute the
                 // generated call — otherwise the reference and its method type come out unresolved.
-                return JavaTemplate.builder("throw " + invocation + ";")
+                J thrown = JavaTemplate.builder("throw " + invocation + ";")
                         .contextSensitive()
                         .imports(wrapperType)
                         .javaParser(JavaParser.fromJavaVersion().classpath(JavaParser.runtimeClasspath()))
                         .build()
                         .apply(getCursor(), m.getCoordinates().replace(), m.getArguments().get(1));
+                // The template indents from the enclosing method, which is wrong once the emit sits
+                // deeper — inside a stage's lambda. The emit's own prefix is where it belongs.
+                return thrown.withPrefix(m.getPrefix());
             }
 
             return m;
+        }
+    }
+
+    /**
+     * Turns the chain that swallowed the reply into one that hands it back.
+     *
+     * <p>The {@code thenAccept} becomes a {@code thenApply} — its lambda already returns the reply by
+     * the time this runs, because {@link EmitRewriter} rewrote the emit inside it — and the statement
+     * holding the chain becomes a {@code return}.
+     */
+    private class StageRewriter extends JavaVisitor<ExecutionContext> {
+
+        private final AsyncReplyChain chain;
+        private final JavaType replyType;
+        /** The links already carrying the reply, so the ones downstream of them can be retyped too. */
+        private final Set<UUID> carriesReply = new HashSet<>();
+
+        private StageRewriter(AsyncReplyChain chain, JavaType replyType) {
+            this.chain = chain;
+            this.replyType = replyType;
+        }
+
+        @Override
+        public J visitMethodInvocation(J.MethodInvocation method, ExecutionContext ctx) {
+            J.MethodInvocation m = (J.MethodInvocation) super.visitMethodInvocation(method, ctx);
+
+            if (m.getId().equals(chain.acceptId())) {
+                m = mapped(m);
+                carriesReply.add(m.getId());
+            } else if (m.getSelect() instanceof J.MethodInvocation select && carriesReply.contains(select.getId())) {
+                // Everything after the mapping now runs on a stage of the reply rather than of Void.
+                m = retyped(m);
+                carriesReply.add(m.getId());
+            }
+
+            if (m.getId().equals(chain.statementId())) {
+                return new J.Return(Tree.randomId(), m.getPrefix(), Markers.EMPTY, m.withPrefix(singleSpace()));
+            }
+            return m;
+        }
+
+        /** {@code thenAccept(…)} becomes {@code thenApply(…)}, name and method type together. */
+        private J.MethodInvocation mapped(J.MethodInvocation accept) {
+            J.MethodInvocation applied = withValueProducingLambda(accept)
+                    .withName(accept.getName().withSimpleName(chain.applyName()));
+            JavaType.Method methodType = accept.getMethodType();
+            if (methodType == null) {
+                return applied;
+            }
+            JavaType.Method mapping = methodType
+                    .withName(chain.applyName())
+                    .withReturnType(chain.stageOf(replyType));
+            return applied.withMethodType(mapping).withName(applied.getName().withType(mapping));
+        }
+
+        private J.MethodInvocation retyped(J.MethodInvocation link) {
+            JavaType.Method methodType = link.getMethodType();
+            if (methodType == null) {
+                return link;
+            }
+            JavaType.Method carrying = methodType.withReturnType(chain.stageOf(replyType));
+            return link.withMethodType(carrying).withName(link.getName().withType(carrying));
+        }
+
+        /**
+         * A lambda written as an expression — {@code details -> emit(SEND_REPLY, reply, messageInfo)}
+         * — is not a block, so {@link EmitRewriter} never saw a statement to turn into a return. Its
+         * body becomes the payload directly.
+         */
+        private J.MethodInvocation withValueProducingLambda(J.MethodInvocation accept) {
+            List<Expression> arguments = new ArrayList<>(accept.getArguments());
+            for (int i = 0; i < arguments.size(); i++) {
+                if (arguments.get(i) instanceof J.Lambda lambda
+                    && lambda.getBody() instanceof J.MethodInvocation body
+                    && body.getArguments().size() >= 2
+                    && matchesConstant(body.getArguments().get(0), replyConstant)) {
+                    Expression payload = body.getArguments().get(1);
+                    arguments.set(i, lambda.withBody(payload.withPrefix(body.getPrefix())));
+                }
+            }
+            return accept.withArguments(arguments);
+        }
+    }
+
+    /**
+     * Collapses a mapping lambda that does nothing but wrap its argument — {@code details -> new
+     * Reply(details)} — into {@code Reply::new}. Runs after {@link StageRewriter} on purpose: the
+     * generated reference only type-checks once the call it sits in reads {@code thenApply}.
+     */
+    private class ConstructorReferenceRewriter extends JavaVisitor<ExecutionContext> {
+
+        private final AsyncReplyChain chain;
+
+        private ConstructorReferenceRewriter(AsyncReplyChain chain) {
+            this.chain = chain;
+        }
+
+        @Override
+        public J visitLambda(J.Lambda lambda, ExecutionContext ctx) {
+            J.Lambda l = (J.Lambda) super.visitLambda(lambda, ctx);
+            if (!(getCursor().getParentTreeCursor().getValue() instanceof J.MethodInvocation parent)
+                || !parent.getId().equals(chain.acceptId())) {
+                return l;
+            }
+            String constructed = wrapsItsArgument(l);
+            if (constructed == null) {
+                return l;
+            }
+            return JavaTemplate.builder(simpleNameOf(constructed) + "::new")
+                    .contextSensitive()
+                    .imports(constructed)
+                    .javaParser(JavaParser.fromJavaVersion().classpath(JavaParser.runtimeClasspath()))
+                    .build()
+                    .apply(getCursor(), l.getCoordinates().replace());
+        }
+
+        /** The constructed type, when the lambda is exactly {@code p -> new T(p)}, else null. */
+        private String wrapsItsArgument(J.Lambda lambda) {
+            List<J> parameters = lambda.getParameters().getParameters();
+            if (parameters.size() != 1
+                || !(parameters.get(0) instanceof J.VariableDeclarations declaration)
+                || declaration.getVariables().size() != 1) {
+                return null;
+            }
+            String parameter = declaration.getVariables().get(0).getSimpleName();
+
+            J body = lambda.getBody();
+            if (body instanceof J.Block block) {
+                if (block.getStatements().size() != 1
+                    || !(block.getStatements().get(0) instanceof J.Return returned)) {
+                    return null;
+                }
+                body = returned.getExpression();
+            }
+            if (!(body instanceof J.NewClass constructed)
+                || constructed.getArguments().size() != 1
+                || !(constructed.getArguments().get(0) instanceof J.Identifier argument)
+                || !parameter.equals(argument.getSimpleName())) {
+                return null;
+            }
+            JavaType.FullyQualified type = TypeUtils.asFullyQualified(constructed.getType());
+            return type == null ? null : type.getFullyQualifiedName();
         }
     }
 
@@ -385,6 +602,12 @@ public class EventListenerToRequestHandler extends Recipe {
             }
         }.visit(body, found);
         return found.get();
+    }
+
+    /** {@code return;} or {@code return null;} — a return that carries nothing back. */
+    private static boolean returnsNothing(J.Return returned) {
+        return returned.getExpression() == null
+               || (returned.getExpression() instanceof J.Literal literal && literal.getValue() == null);
     }
 
     /**
