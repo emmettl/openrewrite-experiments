@@ -617,7 +617,8 @@ public class EventListenerToRequestHandler extends Recipe {
         }
     }
 
-    private J.MethodInvocation findEmit(J.Block body, MethodMatcher emit, String constant) {
+    /** Package-private so {@link FindSkippedHandlers} can explain a decline in the same terms. */
+    static J.MethodInvocation findEmit(J.Block body, MethodMatcher emit, String constant) {
         AtomicReference<J.MethodInvocation> found = new AtomicReference<>();
         new JavaIsoVisitor<AtomicReference<J.MethodInvocation>>() {
             @Override

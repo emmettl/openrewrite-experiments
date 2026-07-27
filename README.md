@@ -33,6 +33,7 @@ here has negative tests as well as positive ones.
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
 | `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method, including one that replies from a `CompletionStage`. Annotation replacement, return-type synthesis (`CompletableFuture<Reply>` and all), parameter removal, `JavaTemplate`, and import bookkeeping. |
 | `AsyncReplyChain` | Analysis, used by the above | Finds the stage a reply is emitted from, by walking out from the emit. Cursor-path ancestry, and knowing when to decline. |
+| `FindSkippedHandlers` | Java visitor, **search recipe** | Lists the handlers the migration declines, and why. `SearchResult` markers, a `DataTable`, and running another recipe to observe what it does rather than predict it. |
 | `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
 | `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, and relocates assertions into it. |
 | `UnusedTestFields` | Analysis, shared by both companions | Which fields nothing reads once a rewrite has taken its statements out. Read/write discrimination over a class, and ignoring what is about to be deleted. |
@@ -79,6 +80,33 @@ the parameter would leave a handler taking an argument it is not meant to. Neith
 the method is left exactly as it was, for a human to decide what that event should do without
 routing. Whether the parameter can go is therefore only asked of the **rewritten** body, once the
 reply and error emits that carried it are gone. Both shapes are pinned by tests.
+
+### `FindSkippedHandlers`
+
+Declining is the right call, but it is silent, and a migration run over a large codebase then looks
+complete when it is not. This search recipe names what was left behind — a marker in the diff and a
+row in a data table, per handler:
+
+```
+/*~~(The routing argument is still read by an emit the migration leaves alone)~~>*/@EventListener(MyRequestType.TYPE)
+public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+```
+
+| reason | what to do about it |
+| --- | --- |
+| No reply emit | Nothing. A fire-and-forget listener has no response to return, and stays a listener. |
+| The reply payload has no type | Fix the run, not the code — the emitter or payload type is missing from the parser classpath. |
+| The reply is emitted from a lambda this recipe cannot follow | Migrate by hand, or teach `AsyncReplyChain` the shape. |
+| The routing argument is still read by an emit the migration leaves alone | Decide what that domain event does without routing, then re-run. |
+
+**It does not predict the skips, it observes them.** The recipe runs the migration over a throwaway
+copy of each file and treats whatever still carries the listener annotation as declined, so the
+listing cannot drift out of step with the migration as that grows new reasons to decline. Only the
+*explanation* is worked out here, by asking the migration's own questions in the same order. It takes
+the same six options, for the same reason.
+
+The rows land in `target/rewrite/datatables/…/…SkippedHandlers.csv` on a `rewrite:run` or
+`rewrite:dryRun`, which is the listing to work from.
 
 **The return is hoisted to the end of the block.** When the method keeps working after the reply —
 emitting another event, say — turning the reply into a `return` in place would skip that trailing
