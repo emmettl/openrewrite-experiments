@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -205,11 +206,8 @@ public class EventListenerToRequestHandler extends Recipe {
                     }
                 }
 
-                J.VariableDeclarations routing = routingParameter(method.getParameters(), replyEmit);
-
                 J.MethodDeclaration md = method
-                        .withLeadingAnnotations(replaceListenerAnnotation(method.getLeadingAnnotations(), listenerAnnotation))
-                        .withParameters(without(method.getParameters(), routing));
+                        .withLeadingAnnotations(replaceListenerAnnotation(method.getLeadingAnnotations(), listenerAnnotation));
                 md = withReturnType(md, async == null ? responseType : async.stageOf(responseType));
                 md = md.withBody((J.Block) new EmitRewriter(emit)
                         .visitNonNull(md.getBody(), ctx, getCursor()));
@@ -222,9 +220,24 @@ public class EventListenerToRequestHandler extends Recipe {
                     // build the reply is a constructor reference, and only now does it type-check.
                     md = md.withBody((J.Block) new ConstructorReferenceRewriter(async)
                             .visitNonNull(md.getBody(), ctx, getCursor()));
-                    maybeAddImport(async.stageTypeName());
                 }
 
+                // Whether the routing parameter can go is only answerable against the rewritten body.
+                // The reply and error emits that carried it are gone by now, but the other emits —
+                // genuine domain events, deliberately untouched — are not, and an emitter overloaded
+                // up to nine arguments is one they routinely pass the routing information to as well.
+                // Dropping a parameter one of those still reads would not compile, and keeping it
+                // would leave a handler taking an argument it is not meant to, so neither half is
+                // done: the method is left exactly as it was.
+                J.VariableDeclarations routing = routingParameter(method.getParameters(), replyEmit);
+                if (routing != null && referencesName(md.getBody(), nameOf(routing))) {
+                    return super.visitMethodDeclaration(method, ctx);
+                }
+                md = md.withParameters(without(method.getParameters(), routing));
+
+                if (async != null) {
+                    maybeAddImport(async.stageTypeName());
+                }
                 maybeAddImport(requestHandlerAnnotation);
                 maybeRemoveImport(eventListenerAnnotation);
                 maybeRemoveImport(owningTypeOf(replyConstant));
@@ -300,16 +313,35 @@ public class EventListenerToRequestHandler extends Recipe {
             }
 
             /**
-             * The parameter the reply emit passed as its trailing argument — the routing
-             * information that a direct return value makes unnecessary.
+             * The parameter the reply emit passes alongside its payload — the routing information
+             * that a direct return value makes unnecessary.
+             *
+             * <p>Any argument after the payload can be that one. These emitters are usually
+             * overloaded per arity rather than variadic, and the wider overloads exist precisely
+             * because emits carry more than the three arguments the common case shows, so the
+             * routing argument is looked for by name across all of them rather than at a fixed
+             * position.
              */
             private J.VariableDeclarations routingParameter(List<Statement> parameters, J.MethodInvocation replyEmit) {
-                if (replyEmit.getArguments().size() < 3
-                    || !(replyEmit.getArguments().get(2) instanceof J.Identifier routing)) {
+                if (parameters.isEmpty()) {
                     return null;
                 }
-                String name = routing.getSimpleName();
+                List<Expression> arguments = replyEmit.getArguments();
+                for (int i = 2; i < arguments.size(); i++) {
+                    if (!(arguments.get(i) instanceof J.Identifier passed)) {
+                        continue;
+                    }
+                    J.VariableDeclarations parameter = parameterNamed(parameters, passed.getSimpleName());
+                    // Never the first parameter: that is the request the migrated handler takes, and
+                    // an emit passing it along does not make it routing.
+                    if (parameter != null && parameter != parameters.get(0)) {
+                        return parameter;
+                    }
+                }
+                return null;
+            }
 
+            private J.VariableDeclarations parameterNamed(List<Statement> parameters, String name) {
                 for (Statement parameter : parameters) {
                     if (parameter instanceof J.VariableDeclarations declaration) {
                         List<J.VariableDeclarations.NamedVariable> named = declaration.getVariables();
@@ -585,7 +617,8 @@ public class EventListenerToRequestHandler extends Recipe {
         }
     }
 
-    private J.MethodInvocation findEmit(J.Block body, MethodMatcher emit, String constant) {
+    /** Package-private so {@link FindSkippedHandlers} can explain a decline in the same terms. */
+    static J.MethodInvocation findEmit(J.Block body, MethodMatcher emit, String constant) {
         AtomicReference<J.MethodInvocation> found = new AtomicReference<>();
         new JavaIsoVisitor<AtomicReference<J.MethodInvocation>>() {
             @Override
@@ -601,6 +634,25 @@ public class EventListenerToRequestHandler extends Recipe {
                 return m;
             }
         }.visit(body, found);
+        return found.get();
+    }
+
+    private static String nameOf(J.VariableDeclarations parameter) {
+        return parameter.getVariables().get(0).getSimpleName();
+    }
+
+    /** Whether anything under {@code tree} still reads this name. */
+    private static boolean referencesName(J tree, String name) {
+        AtomicBoolean found = new AtomicBoolean(false);
+        new JavaIsoVisitor<AtomicBoolean>() {
+            @Override
+            public J.Identifier visitIdentifier(J.Identifier identifier, AtomicBoolean result) {
+                if (name.equals(identifier.getSimpleName())) {
+                    result.set(true);
+                }
+                return identifier;
+            }
+        }.visit(tree, found);
         return found.get();
     }
 

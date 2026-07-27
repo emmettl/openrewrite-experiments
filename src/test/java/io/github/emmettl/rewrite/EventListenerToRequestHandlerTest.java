@@ -308,6 +308,211 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
     }
 
     /**
+     * The emitter is overloaded per arity, not variadic, and the wider overloads exist because emits
+     * carry more than three arguments. The routing argument is then not the third one, so it is
+     * found by name wherever it sits — and the request, which this emit also passes, is not mistaken
+     * for it.
+     */
+    @Test
+    void dropsTheRoutingParameterFromAWiderEmit() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), requestType, "someOther", messageInfo);
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      return new MyResponseType();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The error emit can be just as wide. Only its payload is carried into the throw; whatever else
+     * it passed — context, routing — has no meaning once the failure is an exception.
+     */
+    @Test
+    void throwsFromAWideErrorEmit() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      try {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                      } catch (Exception e) {
+                          eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), "context", messageInfo);
+                      }
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      try {
+                          return new MyResponseType();
+                      } catch (Exception e) {
+                          throw RequestException.fromReply(new SomeErrorType("bad"));
+                      }
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The emits this recipe deliberately does not touch can carry the routing argument too — that is
+     * what an emitter overloaded up to nine arguments is for. Dropping the parameter one of them
+     * still reads would not compile, and keeping it would leave a handler taking an argument it is
+     * not meant to, so the method is left exactly as it was.
+     */
+    @Test
+    void leavesAHandlerWhoseOtherEmitsStillNeedTheRoutingArgument() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther("a", "b"), "c", "d", messageInfo);
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
+     * The same class of emit without the routing argument keeps nothing alive, so the handler
+     * migrates and the untouched emit rides along — at any arity.
+     */
+    @Test
+    void migratesPastOtherEmitsOfAnyArity() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      eventEmitter.emit("AnEvent");
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther("a", "b"), "c", "d", "e");
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), messageInfo);
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeEventOrOther;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      eventEmitter.emit("AnEvent");
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther("a", "b"), "c", "d", "e");
+                      return new MyResponseType();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * The asynchronous shape: the reply is emitted from inside a completion stage, so the handler
      * hands the stage back instead of a value. The mapping lambda does nothing but wrap its
      * argument, so it collapses to a constructor reference.
