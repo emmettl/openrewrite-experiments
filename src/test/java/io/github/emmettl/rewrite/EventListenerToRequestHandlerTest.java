@@ -267,9 +267,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
                   private EventEmitter eventEmitter;
 
-                  @EventListener("NEW_TRADE")
-                  public void handleNewTrade(String tradeId, String account) {
-                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  @EventListener("AnotherEvent")
+                  public void handleAnotherEvent(String someEvent, String someOther) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(someEvent, someOther));
                   }
 
                   @EventListener(MyRequestType.TYPE)
@@ -292,9 +292,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
                   private EventEmitter eventEmitter;
 
-                  @EventListener("NEW_TRADE")
-                  public void handleNewTrade(String tradeId, String account) {
-                      eventEmitter.emit("AnEvent", new SomeEventOrOther(tradeId, account));
+                  @EventListener("AnotherEvent")
+                  public void handleAnotherEvent(String someEvent, String someOther) {
+                      eventEmitter.emit("AnEvent", new SomeEventOrOther(someEvent, someOther));
                   }
 
                   @RequestHandler
@@ -319,25 +319,25 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @EventListener(MyRequestType.TYPE)
                   public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
-                      detailsClient.fetchDetails("id")
-                              .thenAccept(details -> {
-                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
+                      someAsyncClient.fetchSomething("someId")
+                              .thenAccept(thing -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
                               })
                               .exceptionally(e -> {
                                   eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
@@ -349,11 +349,11 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
@@ -362,12 +362,12 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
-                      return detailsClient.fetchDetails("id")
-                              .thenApply(MyAsyncReply::new)
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+                      return someAsyncClient.fetchSomething("someId")
+                              .thenApply(MyAsyncResponseType::new)
                               .exceptionally(e -> {
                                   throw RequestException.fromReply(new SomeErrorType("bad"));
                               });
@@ -390,26 +390,26 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @EventListener(MyRequestType.TYPE)
                   public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
                       try {
-                          detailsClient.fetchDetails("id")
-                                  .thenAccept(details -> {
-                                      MyAsyncReply reply = new MyAsyncReply(details);
+                          someAsyncClient.fetchSomething("someId")
+                                  .thenAccept(thing -> {
+                                      MyAsyncResponseType reply = new MyAsyncResponseType(thing);
                                       eventEmitter.emit(MessageConstants.SEND_REPLY, reply, messageInfo);
                                   })
                                   .exceptionally(e -> {
@@ -425,11 +425,11 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
@@ -438,14 +438,14 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
                       try {
-                          return detailsClient.fetchDetails("id")
-                                  .thenApply(details -> {
-                                      MyAsyncReply reply = new MyAsyncReply(details);
+                          return someAsyncClient.fetchSomething("someId")
+                                  .thenApply(thing -> {
+                                      MyAsyncResponseType reply = new MyAsyncResponseType(thing);
                                       return reply;
                                   })
                                   .exceptionally(e -> {
@@ -472,24 +472,24 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @EventListener(MyRequestType.TYPE)
                   public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
-                      detailsClient.fetchDetails("id")
-                              .thenAcceptAsync(details -> {
-                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
+                      someAsyncClient.fetchSomething("someId")
+                              .thenAcceptAsync(thing -> {
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
                               });
                   }
               }
@@ -497,10 +497,10 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
-              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.SomeAsyncClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
 
               import java.util.concurrent.CompletableFuture;
@@ -508,12 +508,12 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private DetailsClient detailsClient;
+                  private SomeAsyncClient someAsyncClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
-                      return detailsClient.fetchDetails("id")
-                              .thenApplyAsync(MyAsyncReply::new);
+                  public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+                      return someAsyncClient.fetchSomething("someId")
+                              .thenApplyAsync(MyAsyncResponseType::new);
                   }
               }
               """
@@ -536,9 +536,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
-              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncResponseType;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.SomeDetails;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeFetchedThing;
 
               import java.util.List;
 
@@ -548,8 +548,8 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
 
                   @EventListener(MyRequestType.TYPE)
                   public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
-                      List.of(new SomeDetails("id")).forEach(details -> {
-                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
+                      List.of(new SomeFetchedThing("id")).forEach(thing -> {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
                       });
                   }
               }

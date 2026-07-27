@@ -61,10 +61,10 @@ followed it. When the reply is already the last statement, that lands in the sam
 cases share one path. The payload is returned directly (it is already type-attributed from the
 parsed source), not captured into a local; that keeps the output typed with no template or fixup.
 
-**Only this shape migrates.** A listener with no reply emit — `@EventListener("NEW_TRADE") void
-handleNewTrade(String tradeId, String account)` and friends — is left completely alone rather than
-half-migrated into something that will not compile, including when it sits in the same class as one
-that does migrate. That case is pinned by a test.
+**Only this shape migrates.** A listener with no reply emit — `@EventListener("AnotherEvent") void
+handleAnotherEvent(String someEvent, String someOther)` and friends — is left completely alone
+rather than half-migrated into something that will not compile, including when it sits in the same
+class as one that does migrate. That case is pinned by a test.
 
 **The error emit becomes a domain throw.** An `emit(SEND_ERROR, …)` is rewritten to
 `throw <wrapper>.fromReply(…)`, where the wrapper is a configurable static factory that wraps an
@@ -87,9 +87,9 @@ body, and the migrated handler hands the stage back instead of a value:
 // before
 @EventListener(MyRequestType.TYPE)
 public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
-    detailsClient.fetchDetails("id")
-            .thenAccept(details -> {
-                eventEmitter.emit(SEND_REPLY, new MyAsyncReply(details), messageInfo);
+    someAsyncClient.fetchSomething("someId")
+            .thenAccept(thing -> {
+                eventEmitter.emit(SEND_REPLY, new MyAsyncResponseType(thing), messageInfo);
             })
             .exceptionally(e -> {
                 eventEmitter.emit(SEND_ERROR, new SomeErrorType("bad"), messageInfo);
@@ -99,9 +99,9 @@ public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
 
 // after
 @RequestHandler
-public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
-    return detailsClient.fetchDetails("id")
-            .thenApply(MyAsyncReply::new)
+public CompletableFuture<MyAsyncResponseType> handleRequest(MyRequestType request) {
+    return someAsyncClient.fetchSomething("someId")
+            .thenApply(MyAsyncResponseType::new)
             .exceptionally(e -> {
                 throw RequestException.fromReply(new SomeErrorType("bad"));
             });
@@ -110,9 +110,9 @@ public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
 
 | | before | after |
 | --- | --- | --- |
-| return type | `void` | `CompletableFuture<MyAsyncReply>` |
-| the stage | `.thenAccept(details -> { … emit(SEND_REPLY, reply, messageInfo); })` | `.thenApply(details -> { … return reply; })` |
-| a mapping that only wraps | `.thenApply(details -> new MyAsyncReply(details))` | `.thenApply(MyAsyncReply::new)` |
+| return type | `void` | `CompletableFuture<MyAsyncResponseType>` |
+| the stage | `.thenAccept(thing -> { … emit(SEND_REPLY, reply, messageInfo); })` | `.thenApply(thing -> { … return reply; })` |
+| a mapping that only wraps | `.thenApply(thing -> new MyAsyncResponseType(thing))` | `.thenApply(MyAsyncResponseType::new)` |
 | the chain | `client.fetch(…)…;` | `return client.fetch(…)…;` |
 | failure handler | `emit(SEND_ERROR, err, messageInfo); return null;` | `throw RequestException.fromReply(err);` |
 
@@ -271,7 +271,7 @@ the YAML parses, the recipe is discoverable, and every entry in its `recipeList`
 
 To make it available declaratively, add it to `src/main/resources/META-INF/rewrite/experiments.yml`.
 
-## Build details worth knowing
+## Build thing worth knowing
 
 These three are all load-bearing, and each one fails in a way that does not obviously point at its
 cause.

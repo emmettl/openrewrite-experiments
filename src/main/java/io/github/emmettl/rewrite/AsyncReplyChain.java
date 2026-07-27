@@ -19,8 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * method body:
  *
  * <pre>
- * detailsClient.fetchDetails(id)
- *     .thenAccept(details -&gt; eventEmitter.emit(SEND_REPLY, new Reply(details), messageInfo))
+ * someAsyncClient.fetchSomething(id)
+ *     .thenAccept(thing -&gt; eventEmitter.emit(SEND_REPLY, new Reply(thing), messageInfo))
  *     .exceptionally(e -&gt; { eventEmitter.emit(SEND_ERROR, error, messageInfo); return null; });
  * </pre>
  *

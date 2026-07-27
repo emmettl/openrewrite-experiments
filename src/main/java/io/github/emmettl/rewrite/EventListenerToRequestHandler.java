@@ -69,7 +69,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * <pre>
  * &#64;RequestHandler
  * public CompletableFuture&lt;Reply&gt; handleRequest(MyRequestType request) {
- *     return client.fetchDetails(request.id())
+ *     return someAsyncClient.fetchSomething(request.id())
  *             .thenApply(Reply::new)
  *             .exceptionally(e -&gt; { throw RequestException.fromReply(error); });
  * }
@@ -505,7 +505,7 @@ public class EventListenerToRequestHandler extends Recipe {
         }
 
         /**
-         * A lambda written as an expression — {@code details -> emit(SEND_REPLY, reply, messageInfo)}
+         * A lambda written as an expression — {@code thing -> emit(SEND_REPLY, reply, messageInfo)}
          * — is not a block, so {@link EmitRewriter} never saw a statement to turn into a return. Its
          * body becomes the payload directly.
          */
@@ -525,8 +525,8 @@ public class EventListenerToRequestHandler extends Recipe {
     }
 
     /**
-     * Collapses a mapping lambda that does nothing but wrap its argument — {@code details -> new
-     * Reply(details)} — into {@code Reply::new}. Runs after {@link StageRewriter} on purpose: the
+     * Collapses a mapping lambda that does nothing but wrap its argument — {@code thing -> new
+     * Reply(thing)} — into {@code Reply::new}. Runs after {@link StageRewriter} on purpose: the
      * generated reference only type-checks once the call it sits in reads {@code thenApply}.
      */
     private class ConstructorReferenceRewriter extends JavaVisitor<ExecutionContext> {
