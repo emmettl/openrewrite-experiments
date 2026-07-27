@@ -56,13 +56,29 @@ new return type, and an argument after the payload names the routing parameter t
 
 **The emitter is overloaded per arity, not variadic** — `emit(a)`, `emit(a, b)`, … up to nine — which
 is how these are usually written, and the fixture matches. Matching is unaffected: `emit(..)` is
-arity-agnostic, and a call's arguments look the same in the LST either way. What it does change is
-that emits genuinely carry more than three arguments, which is why those wider overloads exist. So
-the routing argument is looked up **by name, across every argument after the payload**, not at a
-fixed position. Assuming position two is not merely incomplete — given
-`emit(SEND_REPLY, reply, requestType, "someOther", messageInfo)` it drops the *request* and keeps the
-`MessageInfo`, leaving a handler that no longer takes what it handles. The first parameter is never
-dropped for that reason, and a test pins the shape.
+arity-agnostic, and a call's arguments look the same in the LST either way. What it changes is the
+assumption that an emit carries three arguments, because those wider overloads exist precisely so
+that emits can carry more. Two things follow, both of them about the routing parameter.
+
+**The routing argument is found by name, across every argument after the payload**, not at a fixed
+position. Reading position two is not merely incomplete — given
+`emit(SEND_REPLY, reply, requestType, "someOther", messageInfo)` it finds the *request*, so the
+migration drops the request parameter and keeps the `MessageInfo`, leaving a handler that no longer
+takes what it handles. The first parameter is never dropped for that reason.
+
+**And it only goes if nothing left in the body still reads it.** The other emits — genuine domain
+events, deliberately untouched — pass the routing information too:
+
+```java
+eventEmitter.emit("AnEvent", new SomeEventOrOther("a", "b"), "c", "d", messageInfo);
+eventEmitter.emit(SEND_REPLY, new MyResponseType(), messageInfo);
+```
+
+Migrating that would drop a parameter the surviving emit still reads, which does not compile; keeping
+the parameter would leave a handler taking an argument it is not meant to. Neither half is done —
+the method is left exactly as it was, for a human to decide what that event should do without
+routing. Whether the parameter can go is therefore only asked of the **rewritten** body, once the
+reply and error emits that carried it are gone. Both shapes are pinned by tests.
 
 **The return is hoisted to the end of the block.** When the method keeps working after the reply —
 emitting another event, say — turning the reply into a `return` in place would skip that trailing

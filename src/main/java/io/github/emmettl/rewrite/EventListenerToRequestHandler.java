@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -205,11 +206,8 @@ public class EventListenerToRequestHandler extends Recipe {
                     }
                 }
 
-                J.VariableDeclarations routing = routingParameter(method.getParameters(), replyEmit);
-
                 J.MethodDeclaration md = method
-                        .withLeadingAnnotations(replaceListenerAnnotation(method.getLeadingAnnotations(), listenerAnnotation))
-                        .withParameters(without(method.getParameters(), routing));
+                        .withLeadingAnnotations(replaceListenerAnnotation(method.getLeadingAnnotations(), listenerAnnotation));
                 md = withReturnType(md, async == null ? responseType : async.stageOf(responseType));
                 md = md.withBody((J.Block) new EmitRewriter(emit)
                         .visitNonNull(md.getBody(), ctx, getCursor()));
@@ -222,9 +220,24 @@ public class EventListenerToRequestHandler extends Recipe {
                     // build the reply is a constructor reference, and only now does it type-check.
                     md = md.withBody((J.Block) new ConstructorReferenceRewriter(async)
                             .visitNonNull(md.getBody(), ctx, getCursor()));
-                    maybeAddImport(async.stageTypeName());
                 }
 
+                // Whether the routing parameter can go is only answerable against the rewritten body.
+                // The reply and error emits that carried it are gone by now, but the other emits —
+                // genuine domain events, deliberately untouched — are not, and an emitter overloaded
+                // up to nine arguments is one they routinely pass the routing information to as well.
+                // Dropping a parameter one of those still reads would not compile, and keeping it
+                // would leave a handler taking an argument it is not meant to, so neither half is
+                // done: the method is left exactly as it was.
+                J.VariableDeclarations routing = routingParameter(method.getParameters(), replyEmit);
+                if (routing != null && referencesName(md.getBody(), nameOf(routing))) {
+                    return super.visitMethodDeclaration(method, ctx);
+                }
+                md = md.withParameters(without(method.getParameters(), routing));
+
+                if (async != null) {
+                    maybeAddImport(async.stageTypeName());
+                }
                 maybeAddImport(requestHandlerAnnotation);
                 maybeRemoveImport(eventListenerAnnotation);
                 maybeRemoveImport(owningTypeOf(replyConstant));
@@ -620,6 +633,25 @@ public class EventListenerToRequestHandler extends Recipe {
                 return m;
             }
         }.visit(body, found);
+        return found.get();
+    }
+
+    private static String nameOf(J.VariableDeclarations parameter) {
+        return parameter.getVariables().get(0).getSimpleName();
+    }
+
+    /** Whether anything under {@code tree} still reads this name. */
+    private static boolean referencesName(J tree, String name) {
+        AtomicBoolean found = new AtomicBoolean(false);
+        new JavaIsoVisitor<AtomicBoolean>() {
+            @Override
+            public J.Identifier visitIdentifier(J.Identifier identifier, AtomicBoolean result) {
+                if (name.equals(identifier.getSimpleName())) {
+                    result.set(true);
+                }
+                return identifier;
+            }
+        }.visit(tree, found);
         return found.get();
     }
 
