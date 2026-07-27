@@ -31,7 +31,7 @@ here has negative tests as well as positive ones.
 | `RemoveMethodInvocation` | Java visitor, **takes options** | Deletes matched calls that stand alone as a statement. Recipe options, cursor inspection to check statement position, and deletion by returning `null`. |
 | `EventListenerToRequestHandler` | Java visitor, takes options | Migrates an event-emitting handler to a direct request/response method. Annotation replacement, return-type synthesis, parameter removal, `JavaTemplate`, and import bookkeeping. |
 | `HandlerTestToDirectCall` | Java visitor, takes options | The caller-side companion: rewrites tests that captured the emitted reply. Multi-statement pattern matching, statement deletion, and method-type repair. |
-| `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, and relocates assertions into it. |
+| `HandlerErrorTestToThrows` | Java visitor, takes options | The error-case companion: rewrites tests that captured an *error* reply into `assertThatThrownBy(…).isInstanceOfSatisfying(…)`. Builds a method chain and a lambda, relocates assertions into it, and retires the captor field once nothing else reads it. |
 | `Tidy` | Declarative YAML | Composes a local recipe with two built-ins. |
 | `RemoveDebugPrinting` | Declarative YAML | Supplies an **option value** by name to `RemoveMethodInvocation`. |
 
@@ -129,9 +129,17 @@ cast reply-unwrap (`ex.getReply()`, the accessor is an option), and relocates th
 assertions into the lambda body. The `verify` and any `reset(…)` are dropped. The wrapper type
 (`RequestException`) and its accessor are options, so it's not tied to any one messaging library.
 
-Two known limitations: the now-unused `@Captor` field is left in place (an unused-field cleanup is a
-separate pass), and the generated `throw`/unwrap needs the wrapper type on the template's parser
-classpath — same `JavaParser.runtimeClasspath()` note as above.
+**The `@Captor` field goes only when nothing still uses it.** The capture and the `getValue()` were
+the captor's only readers in the shape above, so once they are gone the field is dead and is removed
+along with the `ArgumentCaptor`/`Captor` imports. But a captor can be shared — a second test in the
+same class verifying some other emit through it — and there the field is still live, so it stays.
+That is decided before the class body is walked (fields are visited before the methods that use
+them) by asking, for each captor, whether any statement *surviving* the rewrite still names it. The
+captured type's import is deliberately not chased: the generated unwrap casts to it, so it is still
+in use.
+
+One known limitation remains: the generated `throw`/unwrap needs the wrapper type on the template's
+parser classpath — same `JavaParser.runtimeClasspath()` note as above.
 
 ### Method-type repair (both companions)
 

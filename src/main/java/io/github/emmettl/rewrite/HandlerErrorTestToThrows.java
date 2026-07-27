@@ -17,7 +17,9 @@ import org.openrewrite.java.tree.Statement;
 import org.openrewrite.java.tree.TypeUtils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -44,6 +46,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *         assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
  *     });
  * </pre>
+ *
+ * <p>The {@code @Captor} field goes with it, but only once nothing else refers to it: a captor shared
+ * with a test this recipe does not migrate is still live, so it stays.
  */
 public class HandlerErrorTestToThrows extends Recipe {
 
@@ -109,7 +114,8 @@ public class HandlerErrorTestToThrows extends Recipe {
     public String getDescription() {
         return "Rewrites a test that captured an error reply from an event emitter and asserted on it " +
                "into one that asserts the handler throws, unwrapping the reply from the caught " +
-               "exception and moving the assertions into an `isInstanceOfSatisfying` block.";
+               "exception and moving the assertions into an `isInstanceOfSatisfying` block. The " +
+               "captor field is removed once nothing else in the test class uses it.";
     }
 
     @Override
@@ -118,38 +124,36 @@ public class HandlerErrorTestToThrows extends Recipe {
 
         return Preconditions.check(new UsesMethod<>(emit), new JavaIsoVisitor<ExecutionContext>() {
 
+            /** Captors whose round trip collapses here and that nothing else in the class still uses. */
+            private final Set<String> retiredCaptors = new HashSet<>();
+
+            /**
+             * Fields are visited before the methods that use them, so which captors fall out of use has
+             * to be known before the class body is walked.
+             */
+            @Override
+            public J.ClassDeclaration visitClassDeclaration(J.ClassDeclaration classDeclaration, ExecutionContext ctx) {
+                retiredCaptors.addAll(deadCaptors(classDeclaration, emit));
+                return super.visitClassDeclaration(classDeclaration, ctx);
+            }
+
             @Override
             public J.MethodDeclaration visitMethodDeclaration(J.MethodDeclaration method, ExecutionContext ctx) {
-                if (method.getBody() == null) {
+                Migration migration = analyse(method, emit);
+                if (migration == null) {
                     return super.visitMethodDeclaration(method, ctx);
                 }
-                List<Statement> statements = method.getBody().getStatements();
-
-                ErrorVerification verification = findErrorVerification(statements, emit);
-                if (verification == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-                J.VariableDeclarations captured = findCapturedValue(statements, verification.captorName);
-                J.MethodInvocation handlerCall = findHandlerCall(statements, verification);
-                if (captured == null || handlerCall == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-
-                String errorName = captured.getVariables().get(0).getSimpleName();
-                JavaType errorType = captured.getVariables().get(0).getType();
-                if (errorType == null) {
-                    return super.visitMethodDeclaration(method, ctx);
-                }
-                List<Statement> assertions = errorAssertions(statements, captured, errorName);
+                ErrorVerification verification = migration.verification;
+                J.MethodInvocation handlerCall = migration.handlerCall;
+                String errorName = migration.captured.getVariables().get(0).getSimpleName();
+                JavaType errorType = migration.captured.getVariables().get(0).getType();
+                List<Statement> assertions = migration.assertions;
 
                 // Drop the verify, any reset, the captured declaration, and the assertions being moved;
                 // the handler call stays as the anchor the chain replaces.
                 List<Statement> kept = new ArrayList<>();
-                for (Statement statement : statements) {
-                    if (statement == verification.statement
-                        || statement == captured
-                        || assertions.contains(statement)
-                        || (statement instanceof J.MethodInvocation mi && RESET.matches(mi))) {
+                for (Statement statement : method.getBody().getStatements()) {
+                    if (migration.discards(statement) || contains(assertions, statement)) {
                         continue;
                     }
                     kept.add(statement);
@@ -194,7 +198,112 @@ public class HandlerErrorTestToThrows extends Recipe {
                 maybeRemoveImport(owningTypeOf(errorConstant));
                 return md;
             }
+
+            /**
+             * Drops the captor field itself. Runs after the method bodies in the sense that matters —
+             * which captors are dead was settled by the pre-pass in {@code visitClassDeclaration}.
+             */
+            @Override
+            public J.VariableDeclarations visitVariableDeclarations(J.VariableDeclarations declarations,
+                                                                     ExecutionContext ctx) {
+                J.VariableDeclarations vd = super.visitVariableDeclarations(declarations, ctx);
+                if (vd.getVariables().isEmpty()
+                    || !retiredCaptors.contains(vd.getVariables().get(0).getSimpleName())
+                    || !TypeUtils.isOfClassType(vd.getType(), "org.mockito.ArgumentCaptor")) {
+                    return vd;
+                }
+                // Only a class-level field, not a local: a local captor would have been declared
+                // inside the method body we just rewrote.
+                if (!(getCursor().getParentTreeCursor().getValue() instanceof J.Block)
+                    || !(getCursor().getParentTreeCursor().getParentTreeCursor()
+                        .getValue() instanceof J.ClassDeclaration)) {
+                    return vd;
+                }
+                // Unlike the reply recipe, the captured type's import is left alone: the generated
+                // unwrap casts to it, so it is still named by the migrated test.
+
+                //noinspection ConstantConditions — returning null removes the field.
+                return null;
+            }
         });
+    }
+
+    /**
+     * Captor names this recipe retires in {@code classDeclaration}: the round trip collapses, and no
+     * statement that survives the rewrite mentions the captor. A captor shared with a test that does
+     * not migrate — one verifying some other emit — is still live, so it is not returned here.
+     */
+    private Set<String> deadCaptors(J.ClassDeclaration classDeclaration, MethodMatcher emit) {
+        Set<String> retired = new HashSet<>();
+        Set<String> used = new HashSet<>();
+        for (Statement member : classDeclaration.getBody().getStatements()) {
+            if (member instanceof J.VariableDeclarations field
+                && TypeUtils.isOfClassType(field.getType(), "org.mockito.ArgumentCaptor")) {
+                continue;   // a captor's own declaration is not a use of it
+            }
+            if (!(member instanceof J.MethodDeclaration method) || method.getBody() == null) {
+                collectNames(member, used);
+                continue;
+            }
+            Migration migration = analyse(method, emit);
+            if (migration == null) {
+                collectNames(method, used);
+                continue;
+            }
+            retired.add(migration.verification.captorName);
+            for (Statement statement : method.getBody().getStatements()) {
+                if (!migration.discards(statement)) {
+                    collectNames(statement, used);
+                }
+            }
+        }
+        retired.removeAll(used);
+        return retired;
+    }
+
+    /**
+     * Recognises the full error round trip — call, verification, captured value, and a captured value
+     * with a type to cast to. Anything less is not safely collapsible, so the method is left alone.
+     * The rewrite and the dead-captor pre-pass both go through here, so they cannot disagree about
+     * which methods migrate.
+     */
+    private Migration analyse(J.MethodDeclaration method, MethodMatcher emit) {
+        if (method.getBody() == null) {
+            return null;
+        }
+        List<Statement> statements = method.getBody().getStatements();
+        ErrorVerification verification = findErrorVerification(statements, emit);
+        if (verification == null) {
+            return null;
+        }
+        J.VariableDeclarations captured = findCapturedValue(statements, verification.captorName);
+        J.MethodInvocation handlerCall = findHandlerCall(statements, verification);
+        if (captured == null || handlerCall == null || captured.getVariables().get(0).getType() == null) {
+            return null;
+        }
+        List<Statement> assertions =
+                errorAssertions(statements, captured, captured.getVariables().get(0).getSimpleName());
+        return new Migration(verification, captured, handlerCall, assertions);
+    }
+
+    /** Every identifier named anywhere under {@code tree}, used to tell a live captor from a dead one. */
+    private static void collectNames(J tree, Set<String> names) {
+        new JavaIsoVisitor<Set<String>>() {
+            @Override
+            public J.Identifier visitIdentifier(J.Identifier identifier, Set<String> found) {
+                found.add(identifier.getSimpleName());
+                return identifier;
+            }
+        }.visit(tree, names);
+    }
+
+    private static boolean contains(List<Statement> statements, Statement statement) {
+        for (Statement candidate : statements) {
+            if (candidate == statement) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Appends the collected assertion statements into the {@code isInstanceOfSatisfying} lambda body. */
@@ -440,6 +549,32 @@ public class HandlerErrorTestToThrows extends Recipe {
     private static String typeNameOf(JavaType type) {
         JavaType.FullyQualified fullyQualified = TypeUtils.asFullyQualified(type);
         return fullyQualified == null ? type.toString() : fullyQualified.getFullyQualifiedName();
+    }
+
+    /** One migratable test method: what anchors the rewrite, and what the rewrite takes away. */
+    private static class Migration {
+        private final ErrorVerification verification;
+        private final J.VariableDeclarations captured;
+        private final J.MethodInvocation handlerCall;
+        private final List<Statement> assertions;
+
+        private Migration(ErrorVerification verification, J.VariableDeclarations captured,
+                          J.MethodInvocation handlerCall, List<Statement> assertions) {
+            this.verification = verification;
+            this.captured = captured;
+            this.handlerCall = handlerCall;
+            this.assertions = assertions;
+        }
+
+        /**
+         * Statements the rewrite deletes outright. The moved assertions are not among them — they
+         * live on inside the lambda, so a captor they mention would still be in use.
+         */
+        private boolean discards(Statement statement) {
+            return statement == verification.statement
+                   || statement == captured
+                   || (statement instanceof J.MethodInvocation invocation && RESET.matches(invocation));
+        }
     }
 
     private static class ErrorVerification {
