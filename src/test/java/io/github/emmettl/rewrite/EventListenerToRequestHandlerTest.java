@@ -308,6 +308,58 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
     }
 
     /**
+     * The emitter is overloaded per arity, not variadic, and the wider overloads exist because emits
+     * carry more than three arguments. The routing argument is then not the third one, so it is
+     * found by name wherever it sits — and the request, which this emit also passes, is not mistaken
+     * for it.
+     */
+    @Test
+    void dropsTheRoutingParameterFromAWiderEmit() {
+        rewriteRun(
+          java(
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
+              import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
+              import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @EventListener(MyRequestType.TYPE)
+                  public void handleRequest(MyRequestType requestType, MessageInfo messageInfo) {
+                      eventEmitter.emit(MessageConstants.SEND_REPLY, new MyResponseType(), requestType, "someOther", messageInfo);
+                  }
+              }
+              """,
+            """
+              package io.github.emmettl.rewrite.fixtures.handler;
+
+              import io.github.emmettl.rewrite.fixtures.EventEmitter;
+              import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
+              import io.github.emmettl.rewrite.fixtures.domain.MyResponseType;
+
+              public class MyRequestHandler {
+
+                  private EventEmitter eventEmitter;
+
+                  @RequestHandler
+                  public MyResponseType handleRequest(MyRequestType requestType) {
+                      return new MyResponseType();
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    /**
      * The asynchronous shape: the reply is emitted from inside a completion stage, so the handler
      * hands the stage back instead of a value. The mapping lambda does nothing but wrap its
      * argument, so it collapses to a constructor reference.

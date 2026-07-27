@@ -52,7 +52,17 @@ here has negative tests as well as positive ones.
 | other emits | `emit("AnEvent", …)` | unchanged |
 
 The reply emit is what drives it: its payload argument becomes the return value *and* supplies the
-new return type, and its trailing argument names the routing parameter to drop.
+new return type, and an argument after the payload names the routing parameter to drop.
+
+**The emitter is overloaded per arity, not variadic** — `emit(a)`, `emit(a, b)`, … up to nine — which
+is how these are usually written, and the fixture matches. Matching is unaffected: `emit(..)` is
+arity-agnostic, and a call's arguments look the same in the LST either way. What it does change is
+that emits genuinely carry more than three arguments, which is why those wider overloads exist. So
+the routing argument is looked up **by name, across every argument after the payload**, not at a
+fixed position. Assuming position two is not merely incomplete — given
+`emit(SEND_REPLY, reply, requestType, "someOther", messageInfo)` it drops the *request* and keeps the
+`MessageInfo`, leaving a handler that no longer takes what it handles. The first parameter is never
+dropped for that reason, and a test pins the shape.
 
 **The return is hoisted to the end of the block.** When the method keeps working after the reply —
 emitting another event, say — turning the reply into a `return` in place would skip that trailing

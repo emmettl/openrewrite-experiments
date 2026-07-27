@@ -300,16 +300,35 @@ public class EventListenerToRequestHandler extends Recipe {
             }
 
             /**
-             * The parameter the reply emit passed as its trailing argument — the routing
-             * information that a direct return value makes unnecessary.
+             * The parameter the reply emit passes alongside its payload — the routing information
+             * that a direct return value makes unnecessary.
+             *
+             * <p>Any argument after the payload can be that one. These emitters are usually
+             * overloaded per arity rather than variadic, and the wider overloads exist precisely
+             * because emits carry more than the three arguments the common case shows, so the
+             * routing argument is looked for by name across all of them rather than at a fixed
+             * position.
              */
             private J.VariableDeclarations routingParameter(List<Statement> parameters, J.MethodInvocation replyEmit) {
-                if (replyEmit.getArguments().size() < 3
-                    || !(replyEmit.getArguments().get(2) instanceof J.Identifier routing)) {
+                if (parameters.isEmpty()) {
                     return null;
                 }
-                String name = routing.getSimpleName();
+                List<Expression> arguments = replyEmit.getArguments();
+                for (int i = 2; i < arguments.size(); i++) {
+                    if (!(arguments.get(i) instanceof J.Identifier passed)) {
+                        continue;
+                    }
+                    J.VariableDeclarations parameter = parameterNamed(parameters, passed.getSimpleName());
+                    // Never the first parameter: that is the request the migrated handler takes, and
+                    // an emit passing it along does not make it routing.
+                    if (parameter != null && parameter != parameters.get(0)) {
+                        return parameter;
+                    }
+                }
+                return null;
+            }
 
+            private J.VariableDeclarations parameterNamed(List<Statement> parameters, String name) {
                 for (Statement parameter : parameters) {
                     if (parameter instanceof J.VariableDeclarations declaration) {
                         List<J.VariableDeclarations.NamedVariable> named = declaration.getVariables();
