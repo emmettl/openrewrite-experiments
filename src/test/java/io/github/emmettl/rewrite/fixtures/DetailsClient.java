@@ -1,11 +1,11 @@
 package io.github.emmettl.rewrite.fixtures;
 
-import io.github.emmettl.rewrite.fixtures.domain.TradeDetails;
+import io.github.emmettl.rewrite.fixtures.domain.SomeDetails;
 
 import java.util.concurrent.CompletableFuture;
 
 /** A client that answers asynchronously, so a handler using it replies from inside a stage. */
-public interface TradeServiceClient {
+public interface DetailsClient {
 
-    CompletableFuture<TradeDetails> fetchTradeDetails(String valor);
+    CompletableFuture<SomeDetails> fetchDetails(String id);
 }

@@ -32,9 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * handler.handleRequest(request, messageInfo);
  * verify(eventEmitter).emit(eq(SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
  * reset(eventEmitter);
- * StaticDataError error = errorCaptor.getValue();
+ * SomeErrorType error = errorCaptor.getValue();
  * assertThat(error).isNotNull();
- * assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+ * assertThat(error.ohNo()).isEqualTo("bad");
  * </pre>
  *
  * <p>After (the handler now throws {@code RequestException.fromReply(error)}, so the reply is reached
@@ -42,9 +42,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <pre>
  * assertThatThrownBy(() -&gt; handler.handleRequest(request))
  *     .isInstanceOfSatisfying(RequestException.class, ex -&gt; {
- *         StaticDataError error = (StaticDataError) ex.getReply();
+ *         SomeErrorType error = (SomeErrorType) ex.getReply();
  *         assertThat(error).isNotNull();
- *         assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+ *         assertThat(error.ohNo()).isEqualTo("bad");
  *     });
  * </pre>
  *

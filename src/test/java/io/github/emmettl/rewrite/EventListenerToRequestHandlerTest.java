@@ -319,25 +319,25 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @EventListener(MyRequestType.TYPE)
-                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
-                      tradeServiceClient.fetchTradeDetails("valor")
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      detailsClient.fetchDetails("id")
                               .thenAccept(details -> {
-                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
                               })
                               .exceptionally(e -> {
                                   eventEmitter.emit(MessageConstants.SEND_ERROR, new SomeErrorType("bad"), messageInfo);
@@ -349,12 +349,12 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               import java.util.concurrent.CompletableFuture;
@@ -362,12 +362,12 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
-                      return tradeServiceClient.fetchTradeDetails("valor")
-                              .thenApply(MyTradeReply::new)
+                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
+                      return detailsClient.fetchDetails("id")
+                              .thenApply(MyAsyncReply::new)
                               .exceptionally(e -> {
                                   throw RequestException.fromReply(new SomeErrorType("bad"));
                               });
@@ -390,26 +390,26 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @EventListener(MyRequestType.TYPE)
-                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
                       try {
-                          tradeServiceClient.fetchTradeDetails("valor")
+                          detailsClient.fetchDetails("id")
                                   .thenAccept(details -> {
-                                      MyTradeReply reply = new MyTradeReply(details);
+                                      MyAsyncReply reply = new MyAsyncReply(details);
                                       eventEmitter.emit(MessageConstants.SEND_REPLY, reply, messageInfo);
                                   })
                                   .exceptionally(e -> {
@@ -425,12 +425,12 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
               import io.github.emmettl.rewrite.fixtures.common.RequestException;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
               import io.github.emmettl.rewrite.fixtures.domain.SomeErrorType;
 
               import java.util.concurrent.CompletableFuture;
@@ -438,14 +438,14 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
+                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
                       try {
-                          return tradeServiceClient.fetchTradeDetails("valor")
+                          return detailsClient.fetchDetails("id")
                                   .thenApply(details -> {
-                                      MyTradeReply reply = new MyTradeReply(details);
+                                      MyAsyncReply reply = new MyAsyncReply(details);
                                       return reply;
                                   })
                                   .exceptionally(e -> {
@@ -472,24 +472,24 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @EventListener(MyRequestType.TYPE)
-                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
-                      tradeServiceClient.fetchTradeDetails("valor")
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      detailsClient.fetchDetails("id")
                               .thenAcceptAsync(details -> {
-                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                                  eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
                               });
                   }
               }
@@ -497,23 +497,23 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
             """
               package io.github.emmettl.rewrite.fixtures.handler;
 
+              import io.github.emmettl.rewrite.fixtures.DetailsClient;
               import io.github.emmettl.rewrite.fixtures.EventEmitter;
-              import io.github.emmettl.rewrite.fixtures.TradeServiceClient;
               import io.github.emmettl.rewrite.fixtures.annotation.RequestHandler;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
 
               import java.util.concurrent.CompletableFuture;
 
               public class AsyncRequestHandler {
 
                   private EventEmitter eventEmitter;
-                  private TradeServiceClient tradeServiceClient;
+                  private DetailsClient detailsClient;
 
                   @RequestHandler
-                  public CompletableFuture<MyTradeReply> handleLoadTrade(MyRequestType request) {
-                      return tradeServiceClient.fetchTradeDetails("valor")
-                              .thenApplyAsync(MyTradeReply::new);
+                  public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
+                      return detailsClient.fetchDetails("id")
+                              .thenApplyAsync(MyAsyncReply::new);
                   }
               }
               """
@@ -536,9 +536,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
               import io.github.emmettl.rewrite.fixtures.annotation.EventListener;
               import io.github.emmettl.rewrite.fixtures.common.MessageConstants;
               import io.github.emmettl.rewrite.fixtures.domain.MessageInfo;
+              import io.github.emmettl.rewrite.fixtures.domain.MyAsyncReply;
               import io.github.emmettl.rewrite.fixtures.domain.MyRequestType;
-              import io.github.emmettl.rewrite.fixtures.domain.MyTradeReply;
-              import io.github.emmettl.rewrite.fixtures.domain.TradeDetails;
+              import io.github.emmettl.rewrite.fixtures.domain.SomeDetails;
 
               import java.util.List;
 
@@ -547,9 +547,9 @@ class EventListenerToRequestHandlerTest implements RewriteTest {
                   private EventEmitter eventEmitter;
 
                   @EventListener(MyRequestType.TYPE)
-                  public void handleLoadTrade(MyRequestType request, MessageInfo messageInfo) {
-                      List.of(new TradeDetails("valor")).forEach(details -> {
-                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyTradeReply(details), messageInfo);
+                  public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+                      List.of(new SomeDetails("id")).forEach(details -> {
+                          eventEmitter.emit(MessageConstants.SEND_REPLY, new MyAsyncReply(details), messageInfo);
                       });
                   }
               }

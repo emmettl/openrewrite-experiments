@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * method body:
  *
  * <pre>
- * tradeServiceClient.fetchTradeDetails(valor)
+ * detailsClient.fetchDetails(id)
  *     .thenAccept(details -&gt; eventEmitter.emit(SEND_REPLY, new Reply(details), messageInfo))
  *     .exceptionally(e -&gt; { eventEmitter.emit(SEND_ERROR, error, messageInfo); return null; });
  * </pre>

@@ -85,34 +85,34 @@ body, and the migrated handler hands the stage back instead of a value:
 
 ```java
 // before
-@EventListener(LoadTradeRequest.TYPE_ID)
-public void handleLoadTrade(LoadTradeRequest request, MessageInfo messageInfo) {
-    tradeServiceClient.fetchTradeDetails(valor)
+@EventListener(MyRequestType.TYPE)
+public void handleRequest(MyRequestType request, MessageInfo messageInfo) {
+    detailsClient.fetchDetails("id")
             .thenAccept(details -> {
-                eventEmitter.emit(SEND_REPLY, new LoadTradeReply(details), messageInfo);
+                eventEmitter.emit(SEND_REPLY, new MyAsyncReply(details), messageInfo);
             })
             .exceptionally(e -> {
-                eventEmitter.emit(SEND_ERROR, new CalculatorError(UNABLE_TO_PERFORM_REQUEST), messageInfo);
+                eventEmitter.emit(SEND_ERROR, new SomeErrorType("bad"), messageInfo);
                 return null;
             });
 }
 
 // after
 @RequestHandler
-public CompletableFuture<LoadTradeReply> handleLoadTrade(LoadTradeRequest request) {
-    return tradeServiceClient.fetchTradeDetails(valor)
-            .thenApply(LoadTradeReply::new)
+public CompletableFuture<MyAsyncReply> handleRequest(MyRequestType request) {
+    return detailsClient.fetchDetails("id")
+            .thenApply(MyAsyncReply::new)
             .exceptionally(e -> {
-                throw RequestException.fromReply(new CalculatorError(UNABLE_TO_PERFORM_REQUEST));
+                throw RequestException.fromReply(new SomeErrorType("bad"));
             });
 }
 ```
 
 | | before | after |
 | --- | --- | --- |
-| return type | `void` | `CompletableFuture<LoadTradeReply>` |
+| return type | `void` | `CompletableFuture<MyAsyncReply>` |
 | the stage | `.thenAccept(details -> { … emit(SEND_REPLY, reply, messageInfo); })` | `.thenApply(details -> { … return reply; })` |
-| a mapping that only wraps | `.thenApply(details -> new LoadTradeReply(details))` | `.thenApply(LoadTradeReply::new)` |
+| a mapping that only wraps | `.thenApply(details -> new MyAsyncReply(details))` | `.thenApply(MyAsyncReply::new)` |
 | the chain | `client.fetch(…)…;` | `return client.fetch(…)…;` |
 | failure handler | `emit(SEND_ERROR, err, messageInfo); return null;` | `throw RequestException.fromReply(err);` |
 
@@ -176,16 +176,16 @@ the handler *throws* and unwraps the reply:
 handler.handleRequest(request, messageInfo);
 verify(eventEmitter).emit(eq(SEND_ERROR), errorCaptor.capture(), eq(messageInfo));
 reset(eventEmitter);
-StaticDataError error = errorCaptor.getValue();
+SomeErrorType error = errorCaptor.getValue();
 assertThat(error).isNotNull();
-assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+assertThat(error.ohNo()).isEqualTo("bad");
 
 // after
 assertThatThrownBy(() -> handler.handleRequest(request))
     .isInstanceOfSatisfying(RequestException.class, ex -> {
-        StaticDataError error = (StaticDataError) ex.getReply();
+        SomeErrorType error = (SomeErrorType) ex.getReply();
         assertThat(error).isNotNull();
-        assertThat(error.code()).isEqualTo(UNABLE_TO_PERFORM_REQUEST.getCode());
+        assertThat(error.ohNo()).isEqualTo("bad");
     });
 ```
 
